@@ -8,34 +8,42 @@
  *
  * The whole Ctrl-c / Ctrl-z section of the spec reduces to one rule: the
  * terminal delivers SIGINT/SIGTSTP to the *foreground process group*. So the
- * shell never needs handlers for them; it only needs to (a) ignore them itself
- * and (b) make sure the foreground job, not the shell, owns the terminal.
+ * shell never has to forward anything; it only needs to (a) make those signals
+ * harmless to itself and (b) make sure the foreground job, not the shell, owns
+ * the terminal while it runs.
  */
 
 extern pid_t shell_pgid;
 extern int   shell_terminal;   /* STDIN_FILENO */
 
 /*
- * Puts the shell in its own process group, takes the terminal, and sets the
- * job-control signals to SIG_IGN.
+ * Puts the shell in its own process group, takes the terminal, and neutralizes
+ * the job-control signals.
  *
  * CRITERIA:
- *  - "Ctrl-c ... [must] not [quit] the shell"   -> SIGINT ignored.
- *  - "The shell will not be stopped on SIGTSTP" -> SIGTSTP ignored.
- *  - "should not print the process (unlike bash)" -> because these are ignored
- *    rather than handled, there is no handler that could print anything.
- *  - SIGTTIN/SIGTTOU ignored so the shell's own tcsetpgrp() cannot stop it.
+ *  - "Ctrl-c ... [must] not [quit] the shell"   -> SIGINT gets a no-op handler.
+ *  - "The shell will not be stopped on SIGTSTP" -> SIGTSTP gets a no-op handler.
+ *  - "should not print the process (unlike bash)" -> the handlers are empty, so
+ *    there is nothing that could print a job line.
+ *  - SIGTTIN/SIGTTOU are SIG_IGN so the shell's own tcsetpgrp() cannot stop it.
+ *
+ * A no-op handler is used instead of SIG_IGN for SIGINT/SIGTSTP because it is
+ * installed without SA_RESTART: a Ctrl-c typed at the prompt then interrupts
+ * fgets with EINTR, letting main() reprompt on a fresh line. SIG_IGN would not
+ * interrupt the read at all.
+ *
+ * SIGCHLD is deliberately left at SIG_DFL; see jobs_reap().
  */
 void sig_init_shell(void);
 
 /*
  * Restores SIG_DFL for SIGINT, SIGTSTP, SIGTTIN, SIGTTOU, SIGQUIT.
- * MUST be called in every child before exec, because dispositions set to
- * SIG_IGN survive execvp().
+ * MUST be called in every child before exec. exec resets handlers on its own,
+ * but SIG_IGN survives it, so SIGTTIN/SIGTTOU would stay ignored without this.
  *
  * CRITERIA: "Ctrl-c must quit current foreground process" and "Ctrl-z must send
- * SIGTSTP to the current foreground process" -- without this reset the child
- * inherits the shell's SIG_IGN and would ignore both.
+ * SIGTSTP to the current foreground process" -- the child needs the default
+ * terminate/stop behavior for those two signals.
  */
 void sig_reset_child(void);
 

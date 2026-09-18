@@ -1,0 +1,19 @@
+{
+    "version": 4,
+    "configurations": [
+        {
+            "name": "WSL-gnu99",
+            "includePath": [
+                "${workspaceFolder}/Project 1/yash/include",
+                "\\\\wsl.localhost\\Ubuntu\\usr\\include",
+                "\\\\wsl.localhost\\Ubuntu\\usr\\include\\x86_64-linux-gnu",
+                "\\\\wsl.localhost\\Ubuntu\\usr\\lib\\gcc\\x86_64-linux-gnu\\**\\include"
+            ],
+            "defines": [
+                "_GNU_SOURCE"
+            ],
+            "cStandard": "gnu99",
+            "intelliSenseMode": "linux-gcc-x64"
+        }
+    ]
+}
