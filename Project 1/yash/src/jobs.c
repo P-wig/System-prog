@@ -1,4 +1,6 @@
+#include <errno.h>
 #include <stdio.h>
+#include <sys/wait.h>
 
 #include "jobs.h"
 #include "sig.h"
@@ -49,10 +51,30 @@ void jobs_reap(void)
 
 void jobs_wait_fg(job_t *job)
 {
-    /* TODO: loop waitpid(-job->pgid, &st, WUNTRACED) until every child exited
-     *       or one stopped (WIFSTOPPED -> mark JOB_STOPPED, print the job line,
-     *       and return so the shell reclaims the terminal). */
-    (void)job;
+    /* DONE: loop waitpid(-job->pgid, &st, WUNTRACED) until every child exited
+     *       or one stopped (WIFSTOPPED -> mark JOB_STOPPED and return so the
+     *       shell reclaims the terminal).
+     * TODO (job control): print the job line on stop. */
+    int st;
+
+    while (job->nlive > 0) {
+        pid_t pid = waitpid(-job->pgid, &st, WUNTRACED);
+
+        if (pid < 0) {
+            if (errno == EINTR)
+                continue;
+            break;
+        }
+
+        /* One member stopping means the whole group stopped: same pgid. */
+        if (WIFSTOPPED(st)) {
+            job->state = JOB_STOPPED;
+            return;
+        }
+        job->nlive--;
+    }
+
+    job->state = JOB_DONE;
 }
 
 void jobs_print_one(const job_t *job, char mark, const char *status)

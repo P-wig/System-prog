@@ -11,7 +11,7 @@
  * redirection later in the line wins over the pipe and so that a failure only
  * kills that one command (the caller does _exit(1) on -1).
  *
- * CRITERIA satisfied here:
+ * CRITERIA here:
  *  - "with creation of files if they don't exist for output redirection"
  *      outfile is opened O_WRONLY | O_CREAT | O_TRUNC with mode 0644.
  *  - "fail command if input redirection (a file) does not exist"

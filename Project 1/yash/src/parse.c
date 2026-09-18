@@ -69,7 +69,7 @@ int parse_line(const char *line, job_t *job)
      *   otherwise -> append to the current command's argv
      *   Finish by NULL-terminating each argv and setting job->ncmds.
      *
-     * TODO (piping):
+     * DONE (piping):
      *   "|" -> starts cmds[1]; a second pipe is a syntax error
      * TODO (job control):
      *   "&" -> only legal as the last token; sets job->background
@@ -91,8 +91,16 @@ int parse_line(const char *line, job_t *job)
             continue;
         }
 
-        if (strcmp(tok, "|") == 0)
-            return PARSE_ERROR;   /* TODO (piping) */
+        if (strcmp(tok, "|") == 0) {
+            if (ci + 1 >= YASH_MAX_CMDS)  /* only one | per pipeline */
+                return PARSE_ERROR;
+            if (cur->argc == 0)           /* nothing on the left of the pipe */
+                return PARSE_ERROR;
+
+            cur = &job->cmds[++ci];
+            redir_seen = 0;
+            continue;
+        }
 
         if (strcmp(tok, "&") == 0)
             return PARSE_ERROR;   /* TODO (job control) */
