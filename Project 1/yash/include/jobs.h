@@ -29,6 +29,13 @@ void   jobs_remove(job_t *job);
  * used by both jobs_print() and the fg builtin, so they can never disagree.
  */
 job_t *jobs_current(void);
+
+/*
+ * CRITERIA: "bg must send SIGCONT to the most recent stopped process" -- bg
+ * ignores running background jobs, so it cannot reuse jobs_current().
+ */
+job_t *jobs_recent_stopped(void);
+
 job_t *jobs_find_pid(pid_t pid);
 
 /*
@@ -72,5 +79,12 @@ void   jobs_wait_fg(job_t *job);
  */
 void   jobs_print(void);                 /* builtin: jobs */
 void   jobs_print_one(const job_t *job, char mark, const char *status);
+
+/*
+ * CRITERIA: "All child processes will be dead on exit" -> called on the way out
+ * of main. SIGKILL is used because it cannot be caught or ignored and it reaches
+ * stopped processes without needing SIGCONT first.
+ */
+void   jobs_kill_all(void);
 
 #endif /* JOBS_H */

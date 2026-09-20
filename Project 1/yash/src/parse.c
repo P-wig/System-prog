@@ -2,6 +2,27 @@
 
 #include "parse.h"
 
+/*
+ * C library interfaces used here:
+ *   memset(p, 0, n)            - fills n bytes with 0; zeroes the whole job_t so
+ *                                every pointer field starts as NULL.
+ *   strlen(s)                  - number of bytes before the terminating '\0'.
+ *   strcpy(dst, src)           - copies src including its '\0'. Safe here only
+ *                                because the caller's line is length-checked
+ *                                against YASH_MAX_LINE first.
+ *   strcmp(a, b)               - 0 when the strings are equal; used for exact
+ *                                operator matches like "|" and "&".
+ *   strtok_r(s, delims, &save) - splits s in place: overwrites each delimiter
+ *                                with '\0' and returns a pointer to the next
+ *                                token, or NULL when done. The _r suffix means
+ *                                reentrant: the scan position lives in `save`
+ *                                instead of a hidden global, so nested or
+ *                                concurrent tokenizing cannot corrupt it.
+ *                                Because it edits the buffer, the tokens point
+ *                                into job->buf and stay valid only as long as
+ *                                that buffer does.
+ */
+
 /* Splits job->buf in place on spaces/tabs. Returns token count, -1 on overflow. */
 static int tokenize(char *buf, char *tokens[], int max)
 {
@@ -71,7 +92,7 @@ int parse_line(const char *line, job_t *job)
      *
      * DONE (piping):
      *   "|" -> starts cmds[1]; a second pipe is a syntax error
-     * TODO (job control):
+     * DONE (job control):
      *   "&" -> only legal as the last token; sets job->background
      */
     for (i = 0; i < ntok; i++) {
@@ -102,8 +123,15 @@ int parse_line(const char *line, job_t *job)
             continue;
         }
 
-        if (strcmp(tok, "&") == 0)
-            return PARSE_ERROR;   /* TODO (job control) */
+        if (strcmp(tok, "&") == 0) {
+            if (i != ntok - 1)  /* & is always the last token on the line */
+                return PARSE_ERROR;
+            if (ci != 0)        /* | and & are mutually exclusive */
+                return PARSE_ERROR;
+
+            job->background = 1;
+            continue;
+        }
 
         /* Spec: redirections follow the command after all its args. */
         if (redir_seen)
@@ -116,6 +144,20 @@ int parse_line(const char *line, job_t *job)
 
     if (cur->argc == 0)
         return PARSE_ERROR;
+
+    /*
+     * Keep cmdline free of the trailing '&' so job lines can add it back for any
+     * background job, including one moved there later by bg.
+     */
+    if (job->background) {
+        size_t n = strlen(job->cmdline);
+
+        while (n > 0 && (job->cmdline[n - 1] == '&' ||
+                         job->cmdline[n - 1] == ' ' ||
+                         job->cmdline[n - 1] == '\t'))
+            n--;
+        job->cmdline[n] = '\0';
+    }
 
     job->ncmds = ci + 1;
     for (i = 0; i < job->ncmds; i++)
