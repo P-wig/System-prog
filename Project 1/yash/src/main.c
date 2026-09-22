@@ -59,7 +59,7 @@ int main(void)
             continue;
         }
 
-        line[strcspn(line, "\n")] = '\0';
+        line[strcspn(line, "\n")] = '\0'; // trim the trailing newline if present
 
         if (parse_line(line, &job) != PARSE_OK)
             continue;

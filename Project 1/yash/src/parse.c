@@ -47,7 +47,7 @@ static int is_operator(const char *tok)
 }
 
 /* Returns the cmd_t field tok redirects, or NULL if tok is not a redirection. */
-static char **redir_slot(const char *tok, cmd_t *cmd)
+static char **redirect_slot(const char *tok, cmd_t *cmd)
 {
     if (strcmp(tok, "<") == 0)
         return &cmd->infile;
@@ -64,7 +64,7 @@ int parse_line(const char *line, job_t *job)
     int    ntok;
     int    i;
     int    ci = 0;          /* index of the command being filled */
-    int    redir_seen = 0;  /* a redirection ends the arg list of this command */
+    int    redirect_seen = 0;  /* a redirection ends the arg list of this command */
     cmd_t *cur;
 
     if (line == NULL || strlen(line) > YASH_MAX_LINE)
@@ -97,7 +97,7 @@ int parse_line(const char *line, job_t *job)
      */
     for (i = 0; i < ntok; i++) {
         char  *tok = tokens[i];
-        char **slot = redir_slot(tok, cur);
+        char **slot = redirect_slot(tok, cur);
 
         if (slot != NULL) {
             if (cur->argc == 0)   /* redirection with no command to attach it to */
@@ -108,7 +108,7 @@ int parse_line(const char *line, job_t *job)
                 return PARSE_ERROR;
 
             *slot = tokens[++i];
-            redir_seen = 1;
+            redirect_seen = 1;
             continue;
         }
 
@@ -119,7 +119,7 @@ int parse_line(const char *line, job_t *job)
                 return PARSE_ERROR;
 
             cur = &job->cmds[++ci];
-            redir_seen = 0;
+            redirect_seen = 0;
             continue;
         }
 
@@ -134,7 +134,7 @@ int parse_line(const char *line, job_t *job)
         }
 
         /* Spec: redirections follow the command after all its args. */
-        if (redir_seen)
+        if (redirect_seen)
             return PARSE_ERROR;
         if (cur->argc == YASH_MAX_ARGS)
             return PARSE_ERROR;

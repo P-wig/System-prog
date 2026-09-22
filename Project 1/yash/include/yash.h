@@ -13,7 +13,9 @@
  *   "Max number of jobs running at the same time: 20" -> YASH_MAX_JOBS
  */
 #define YASH_MAX_LINE   200
-#define YASH_MAX_TOKENS 128  /* tokens are space separated, so <= (200+1)/2 */
+/* Shortest tokens are 1 char + 1 space, so 200 chars hold at most (200+1)/2 =
+ * 100 of them. 128 is the next power of two above that. */
+#define YASH_MAX_TOKENS 128
 #define YASH_MAX_ARGS   64
 #define YASH_MAX_CMDS   2    /* at most one pipe per line */
 #define YASH_MAX_JOBS   20
