@@ -239,6 +239,19 @@ static void dispatch(session_t *s, char *line)
         handle_text(s, line);
 }
 
+/*
+ * While a foreground job owns the session only CTL is still a message;
+ * everything else is that job's stdin. Routing a stray CMD to handle_cmd
+ * here would fork a second job on top of the running one.
+ */
+static void dispatch_running(session_t *s, char *line)
+{
+    if (strncmp(line, MSG_CTL, MSG_PREFIX_LEN) == 0)
+        handle_ctl(s, line + MSG_PREFIX_LEN);
+    else
+        handle_text(s, line);
+}
+
 int session_pump(session_t *s, int timeout_ms)
 {
     char           line[YASH_BUF_SIZE];
@@ -248,7 +261,7 @@ int session_pump(session_t *s, int timeout_ms)
 
     /* Several messages can arrive in one packet, so drain the buffer first. */
     while (buf_take_line(s, line, sizeof line))
-        dispatch(s, line);
+        dispatch_running(s, line);
 
     FD_ZERO(&rfds);
     FD_SET(s->cfd, &rfds);
@@ -263,7 +276,7 @@ int session_pump(session_t *s, int timeout_ms)
         return 0;               /* client disconnected */
 
     while (buf_take_line(s, line, sizeof line))
-        dispatch(s, line);
+        dispatch_running(s, line);
 
     return 1;
 }
