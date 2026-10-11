@@ -35,8 +35,9 @@ socket, and job-control signals come from messages instead of a tty.
 
 ```
 Project 2/
-  SPEC.md  PROTOCOL.md  DESIGN.md  USAGE.md
-  Makefile                  builds both binaries
+  SPEC.md  PROTOCOL.md  DESIGN.md
+  Makefile                       builds both binaries into bin/
+  common/include/protocol.h      port, message keywords, prompt — shared
   yashd/
     include/  yashd.h daemon.h transport.h server.h session.h log.h
               parse.h exec.h jobs.h redirect.h builtins.h
@@ -47,13 +48,18 @@ Project 2/
     src/      main.c client.c
 ```
 
+`protocol.h` is the only header both binaries include. Putting `YASH_PORT` and
+the `CMD `/`CTL ` keywords there means the two sides cannot drift apart.
+
 `parse.c` and `redirect.c` come over from Project 1 untouched — they contain no
 globals and no terminal assumptions. `jobs.c`, `exec.c` and `builtins.c` need
 the session-context change described below. `sig.c` does **not** come over; a
 daemon has no controlling terminal, so its entire reason for existing is gone.
 
-Build with the same pattern as Project 1 (`-std=gnu99 -Wall -Wextra -g`), plus
-`-pthread` on both compile and link for the server.
+Build with the same flags as Project 1 (`-std=gnu99 -Wall -Wextra -g`), plus
+`-pthread` for the server. `make server` and `make client` build one side
+alone; outputs land in `bin/` so the binary `yash` doesn't collide with the
+source directory of the same name.
 
 ---
 
@@ -70,9 +76,9 @@ That makes the toggle a three-function interface:
 ```c
 typedef enum { TRANSPORT_UNIX, TRANSPORT_TCP } transport_kind_t;
 
-int  transport_listen(transport_kind_t kind);          /* bound, listening fd */
-int  transport_accept(int lfd, peer_t *peer);          /* fd + who connected  */
-void transport_close(int lfd, transport_kind_t kind);  /* unlink the path too */
+int  transport_listen(transport_kind_t kind);                     /* listening fd */
+int  transport_accept(int lfd, transport_kind_t kind, peer_t *p); /* fd + who     */
+void transport_close(int lfd, transport_kind_t kind);             /* unlinks path */
 ```
 
 ```mermaid
@@ -128,7 +134,7 @@ know are `transport.c` and the peer-identity string.
 | `fork()`, parent `_exit(0)` | The child is not a process group leader, so `setsid` can succeed. Also returns the shell prompt immediately. |
 | `setsid()` | New session, new process group, **no controlling terminal**. This is what makes it a daemon. |
 | `signal(SIGHUP, SIG_IGN)` + second `fork()` | The second child is not a session leader, so it can never reacquire a controlling terminal by opening a tty. |
-| `chdir("/")` | Stops the daemon from pinning a filesystem that someone wants to unmount. |
+| `chdir("/tmp")` | Stops the daemon from pinning the invoking user's directory. `/tmp` rather than `/` so a client's relative-path redirection (`echo hi > out.txt`) still lands somewhere writable. |
 | `umask(0)` | The daemon sets its own permission bits explicitly; it must not inherit the invoking shell's mask. |
 | Close all inherited fds | Nothing the parent had open should leak into a long-lived process. |
 | Reopen 0, 1, 2 on `/dev/null` | Any stray `printf` goes nowhere instead of writing into a random descriptor that is later reused for a socket. |
@@ -175,10 +181,9 @@ daemon during testing means waiting two minutes between runs.
 the library reclaim its stack at exit instead of leaking one thread's worth of
 memory per connection.
 
-The client's IP and port are taken from the `struct sockaddr_in` filled by
-`accept` — `inet_ntop(AF_INET, &from.sin_addr, ...)` and
-`ntohs(from.sin_port)` — and stored in the session, because every log line
-needs them.
+The client's IP and port are filled into `peer_t` by `transport_accept` —
+`inet_ntop(AF_INET, &sin.sin_addr, ...)` and `ntohs(sin.sin_port)` — and stored
+in the session, because every log line needs them.
 
 ---
 
@@ -201,19 +206,27 @@ the sharing entirely:
 
 ```c
 typedef struct {
-    int        cfd;             /* the client socket */
-    char       ip[INET_ADDRSTRLEN];
-    int        port;
-    job_t     *job_list;        /* was the static in jobs.c */
-    int        next_jid;
-    job_t     *fg_job;          /* target of CTL c / CTL z */
-    int        stdin_pipe[2];   /* plain text -> running command */
+    int     cfd;                    /* the client socket */
+    peer_t  peer;                   /* IP and port, for the log line */
+    job_t  *job_list;               /* was the static in jobs.c */
+    job_t  *fg_job;                 /* target of CTL c / CTL z */
+    char    inbuf[YASH_BUF_SIZE];   /* partial line held across reads */
+    size_t  inlen;
+    int     quit;
 } session_t;
 ```
 
 Every function in `jobs.c`, `exec.c` and `builtins.c` gains a `session_t *` as
 its first parameter. Mechanical, but it must be done consistently — one
 leftover static is a race that only shows up with two clients connected.
+
+**The subtler half of the same problem is `waitpid`.** Child processes belong
+to the *process*, not the thread that forked them, so Project 1's
+`waitpid(-1, ...)` would let one session reap another session's child. The
+status is then delivered to a thread that doesn't recognize the pid and is
+thrown away — the owning client's job hangs in `Running` forever and never
+prints `Done`. Both wait paths therefore wait on the job's own process group
+(`waitpid(-job->pgid, ...)`), never on `-1`.
 
 Genuinely shared state is then limited to exactly two things: the listening
 socket (only the accept loop touches it) and the log file.
@@ -229,11 +242,19 @@ parser, the fork/exec, the redirection, the job table — is unchanged.
 
 | Project 1 | Project 2 |
 |---|---|
-| `fgets(line, ..., stdin)` | `readsocket(session, line)` |
-| `fputs("# ", stdout)` | `write(cfd, "\n# ", 3)` |
-| child inherits stdout | child gets `dup2(cfd, STDOUT_FILENO)` |
-| child inherits stdin | child gets `dup2(stdin_pipe[0], STDIN_FILENO)` |
+| `fgets(line, ..., stdin)` | `session_readsocket(s, line, n)` |
+| `fputs("# ", stdout)` | `session_prompt(s)` — writes `"\n# "` to the socket |
+| `printf(...)` for job lines | `session_printf(s, ...)` |
+| child inherits stdout | child gets `dup2(s->cfd, STDOUT_FILENO)` |
+| child inherits stdin | child gets `dup2(job->infd pipe, STDIN_FILENO)` |
 | `tcsetpgrp(0, pgid)` | **deleted** — no tty to hand over |
+
+The output side splits in two, and this is easy to miss. A command's own
+output never passes through the daemon at all: `dup2` hands the child the
+socket and the kernel moves the bytes. But everything the *shell* prints — job
+lines, `Done` messages, the line `fg` echoes — used to go to stdout, and the
+daemon's stdout is `/dev/null`. Every one of those `printf` calls has to become
+`session_printf`, or the output silently disappears.
 
 `readsocket` is not a one-liner wrapper around `read`, and this is the part
 that bites. **Stream sockets have no message boundaries.** A single `read` may
@@ -242,7 +263,7 @@ hid all of that. So the session carries a small accumulating buffer:
 
 ```c
 /* appends to s->inbuf until a '\n' is present, then hands back one line */
-int readsocket(session_t *s, char *line, size_t n);
+int session_readsocket(session_t *s, char *line, size_t n);
 ```
 
 It returns one complete `\n`-terminated line at a time, 0 on clean disconnect.
@@ -252,14 +273,22 @@ stdin text — the one genuinely new step that `fgets` had no equivalent for.
 In the child, after `fork` and before `exec`:
 
 ```c
-dup2(session->stdin_pipe[0], STDIN_FILENO);
-dup2(cfd, STDOUT_FILENO);
-dup2(cfd, STDERR_FILENO);
-redirect_apply(cmd);           /* an explicit > still overrides the socket */
+if (i == 0) dup2(inpipe[0], STDIN_FILENO);  /* client's plain text */
+dup2(s->cfd, STDOUT_FILENO);
+dup2(s->cfd, STDERR_FILENO);
+/* ... the | dup2s, which override the socket on the piped side ... */
+redirect_apply(cmd);           /* an explicit > still overrides both */
 ```
 
 Ordering is unchanged from Project 1 and for the same reason: `redirect_apply`
-runs last, so `ls > out.txt` writes to the file rather than the socket.
+runs last, so `ls > out.txt` writes to the file rather than the socket. The
+child then closes its own copy of `s->cfd`; the three dups keep the connection
+alive for as long as it runs.
+
+The write end of that stdin pipe is stored as `job->infd` rather than on the
+session, so a job stopped by `CTL z` and resumed with `fg` still has somewhere
+to receive input. Background jobs get theirs closed immediately — they read
+EOF instead of stealing what the user types next.
 
 ---
 
@@ -273,9 +302,10 @@ controlling terminal, so nothing delivers those signals automatically.
 The server has to do explicitly what the tty used to do implicitly:
 
 ```c
-case 'c': if (s->fg_job) kill(-s->fg_job->pgid, SIGINT);  break;
-case 'z': if (s->fg_job) kill(-s->fg_job->pgid, SIGTSTP); break;
-case 'd': close(s->stdin_pipe[1]); s->stdin_pipe[1] = -1; break;
+case CTL_INT:  if (j) kill(-j->pgid, SIGINT);  break;
+case CTL_STOP: if (j) kill(-j->pgid, SIGTSTP); break;
+case CTL_EOF:  if (j && j->infd >= 0) { close(j->infd); j->infd = -1; }
+               else s->quit = 1;              break;
 ```
 
 Which creates a sequencing problem: while a foreground job runs, the session
@@ -288,9 +318,11 @@ to interrupt it. Two workable answers:
    directly — cleaner control flow, but now two threads touch `session_t` and
    the job table needs a mutex after all.
 
-Option 1 keeps the "one thread per client" structure the handout asks for and
-keeps the session lock-free. It is the default choice unless the loop proves
-unworkable.
+Option 1 is what `jobs_wait_fg` does: it alternates `session_pump(s, 50ms)`
+with a non-blocking `poll_job`. That keeps the "one thread per client"
+structure the handout asks for and keeps the session lock-free. If the client
+disappears mid-job, the pump reports it, the group is `SIGKILL`ed, and the loop
+switches to a blocking wait since no further input can arrive.
 
 Process groups still matter, for the same reason as Project 1: `setpgid` in
 both parent and child puts a pipeline in one group so `kill(-pgid, ...)` hits
@@ -381,7 +413,9 @@ need real handlers rather than default dispositions.
 | Commands truncated or doubled | `readsocket` assuming one `read` equals one line |
 | Client hangs after a command | Server didn't send `"\n# "` on some path |
 | Two clients see each other's jobs | A surviving `static` in `jobs.c` |
+| A `Done` line never appears | `waitpid(-1, ...)` let another session reap the child |
 | Garbage mixed into a client's output | fd 0/1/2 not reopened on `/dev/null` |
+| Job lines vanish but command output works | a `printf` that should be `session_printf` |
 | Log lines interleaved | Multiple `write` calls per entry, or no mutex |
 | Ctrl-c does nothing | Thread blocked in `waitpid`, not reading the socket |
 | `ls \| wc -l` hangs | Pipe fd not closed in all three places (same as Project 1) |
@@ -389,11 +423,15 @@ need real handlers rather than default dispositions.
 
 ---
 
-## Open questions to resolve during implementation
+## Resolved during implementation
 
-- Does `jobs`/`fg`/`bg` output go to the socket through the same path as
-  command output? (It should — the client cannot tell the difference.)
-- What does `fg` mean without a terminal? Likely: `SIGCONT` the job, mark it
-  foreground, and block in the `select`+`waitpid` loop so `CTL c` still reaches it.
-- Should the daemon handle `SIGTERM` to shut down cleanly and remove the pid
-  file? Not required, but cheap.
+- `jobs`/`fg`/`bg` output goes to the socket through `session_printf`, the same
+  destination as command output. The client cannot tell the difference.
+- `fg` without a terminal: `SIGCONT` the group, mark it foreground, and run the
+  same `select`+`waitpid` loop so `CTL c` still reaches it.
+- A bare line at the prompt (no `CMD` prefix) is ignored rather than treated as
+  a command, so a non-conforming client can't bypass the protocol.
+- `quit` is honored server-side as well as client-side, which makes the daemon
+  testable with plain `nc`.
+- Still open: handling `SIGTERM` to remove the pid file on shutdown. Not
+  required, and the `lockf` is released by the kernel on exit anyway.

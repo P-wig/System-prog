@@ -18,12 +18,10 @@ typedef struct {
     job_t  *job_list;               /* was the static in jobs.c */
     job_t  *fg_job;                 /* target of CTL c / CTL z, or NULL */
 
-    int     stdin_pipe[2];          /* plain text -> running command's stdin */
-
     char    inbuf[YASH_BUF_SIZE];   /* partial line held across reads */
     size_t  inlen;
 
-    int     quit;                   /* set by CTL d at the prompt */
+    int     quit;                   /* CTL d at the prompt, or peer closed */
 } session_t;
 
 session_t *session_create(int cfd, const peer_t *peer);
@@ -40,8 +38,20 @@ void *session_main(void *arg);
  */
 int session_readsocket(session_t *s, char *line, size_t n);
 
+/*
+ * Services the socket while a foreground job runs: handles CTL messages and
+ * forwards plain text to the job's stdin. Waits at most timeout_ms.
+ * Returns 1 normally, 0 when the client closed the connection.
+ */
+int session_pump(session_t *s, int timeout_ms);
+
+/*
+ * Everything the shell itself prints. Project 1 used printf; the daemon's
+ * stdout is /dev/null, so these go to the socket instead.
+ */
 int session_write(session_t *s, const char *buf, size_t n);
 int session_puts(session_t *s, const char *str);
+int session_printf(session_t *s, const char *fmt, ...);
 int session_prompt(session_t *s);
 
 #endif /* SESSION_H */

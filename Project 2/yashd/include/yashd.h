@@ -11,6 +11,7 @@
 
 #define YASHD_LOG_PATH  "/tmp/yashd.log"
 #define YASHD_PID_PATH  "/tmp/yashd.pid"
+#define YASHD_BACKLOG   16
 
 #define YASH_MAX_TOKENS 128
 #define YASH_MAX_ARGS   64
@@ -24,7 +25,7 @@ typedef struct {
     char  *infile;                  /* <  target, NULL if unused */
     char  *outfile;                 /* >  target, NULL if unused */
     char  *errfile;                 /* 2> target, NULL if unused */
-    pid_t  pid;
+    pid_t  pid;                     /* 0 once reaped */
 } cmd_t;
 
 typedef enum {
@@ -41,6 +42,9 @@ typedef struct job {
     int          background;
     int          ncmds;
     int          nlive;                      /* children not yet reaped */
+    /* Write end of the pipe feeding this job's stdin. Plain-text messages
+     * from the client are forwarded here; CTL d closes it. -1 when unused. */
+    int          infd;
     cmd_t        cmds[YASH_MAX_CMDS];
     char         cmdline[YASH_MAX_LINE + 1]; /* pristine copy, for `jobs` */
     char         buf[YASH_MAX_LINE + 1];     /* mutable copy, argv points here */

@@ -1,3 +1,4 @@
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -22,7 +23,17 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    /* TODO: daemon_init(), log_open(), ignore SIGPIPE, then server_run(kind). */
-    (void)kind;
+    /* A client that disappears mid-write must not take the daemon down. */
+    signal(SIGPIPE, SIG_IGN);
+
+    if (daemon_init() < 0)
+        return 1;
+
+    if (log_open() < 0)
+        return 1;
+
+    server_run(kind);
+
+    log_close();
     return 0;
 }
