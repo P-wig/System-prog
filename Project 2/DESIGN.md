@@ -38,6 +38,59 @@ Note the dotted arrow. A command's output does **not** travel back through the
 daemon — the child's descriptors are the socket, so the kernel moves those
 bytes directly. Only what the shell itself prints passes through `session.c`.
 
+## What is different as a feature
+
+The shell language is identical — same operators, same builtins, same job
+control. What changed is everything around it.
+
+| | Project 1 | Project 2 |
+|---|---|---|
+| Who can use it | whoever is at the keyboard | any machine that can reach port 3820 |
+| Concurrent users | one | many, one detached thread each |
+| Lifetime | dies with the terminal | detached daemon, survives logout |
+| Where output goes | the terminal | back over the socket |
+| Where the prompt comes from | the shell printed it locally | **the server** — the client only echoes bytes |
+| Ctrl-c / Ctrl-z | the tty signalled the job | travel as `CTL c` / `CTL z` messages |
+| Ctrl-d | end the shell | end the session **or** EOF for a running command |
+| Command stdin | inherited from the terminal | a pipe fed by the client's typed text |
+| Auditing | none | every command logged to `/tmp/yashd.log` |
+| Transport | n/a | TCP, or AF_UNIX with `-u` |
+| Exiting | Ctrl-d only | Ctrl-d or `quit` |
+
+### Capabilities gained
+
+- **Multi-user.** Each client gets its own job table, its own numbering, its
+  own foreground job. `jobs` shows only your jobs; two clients running `sleep`
+  never see each other.
+- **Remote.** The client needs nothing but an IP, and interoperates with any
+  server that speaks the same three message types.
+- **Audited.** Every accepted command lands in `/tmp/yashd.log` tagged with the
+  client's IP and ephemeral port, so two sessions from the same host are still
+  distinguishable.
+- **Transport-agnostic.** The same session code runs over a Unix domain socket
+  or TCP; only `transport.c` knows which.
+
+### Capabilities lost, and why
+
+- **No terminal.** A daemon has no controlling tty, so `tcsetpgrp` is gone and
+  nothing routes Ctrl-c for us. Anything that needs a real terminal — `vim`,
+  `top`, password prompts — will not behave.
+- **No local working directory.** The daemon `chdir`s away from whoever
+  launched it, so `ls` with no argument lists `/tmp`, and `> out.txt` writes
+  `/tmp/out.txt`.
+- **Background jobs cannot read input.** Their stdin is closed at fork, so they
+  see EOF rather than competing with the foreground job for what you type.
+
+### Behavior a user would actually notice
+
+- The prompt always starts on its own line, because the server sends `"\n# "`
+  rather than `"# "` — that leading newline is what frames the output.
+- Closing the client kills its jobs. There is no `nohup`-style survival; a
+  session owns its processes and `jobs_kill_all` runs on teardown.
+- Relative paths are relative to `/tmp`, not to wherever you launched `yash`.
+- `quit` works as well as Ctrl-d, and is handled on both sides so the daemon is
+  also testable with plain `nc`.
+
 ## The data model
 
 Project 1's two structs survive, with one field added, and one struct is new.
@@ -377,21 +430,72 @@ As in Project 1, every `waitpid` lives in one file. The new rule is that every
 signal *disposition* now lives in two well-defined places instead of a `sig.c`:
 the daemon's own in `main.c`, the child's in `exec.c`.
 
-## What changed from Project 1
+## What changed in the implementation
 
-| Project 1 | Project 2 |
+The feature table near the top says what is different for a user; this one says
+where to find it in the code. Paths are relative to `Project 2/`.
+
+### Where each Project 1 module went
+
+| Project 1 | Project 2 | What happened |
+|---|---|---|
+| `main.c` — the read loop | [yashd/src/session.c](yashd/src/session.c#L286) | became `session_main`, one running copy per client |
+| `main.c` — startup | [yashd/src/main.c](yashd/src/main.c#L15), [yashd/src/daemon.c](yashd/src/daemon.c#L44) | argument parsing and detaching |
+| `sig.c` | — | dissolved into three places; see below |
+| `jobs.c` | [yashd/src/jobs.c](yashd/src/jobs.c) | job list moved into `session_t`, waits rescoped |
+| `exec.c` | [yashd/src/exec.c](yashd/src/exec.c#L31) | same fork/exec, different descriptors |
+| `builtins.c` | [yashd/src/builtins.c](yashd/src/builtins.c) | output retargeted, `tcsetpgrp` dropped |
+| `parse.c` | [yashd/src/parse.c](yashd/src/parse.c) | **unchanged** |
+| `redirect.c` | [yashd/src/redirect.c](yashd/src/redirect.c) | **unchanged** |
+| — | [yashd/src/transport.c](yashd/src/transport.c), [yashd/src/server.c](yashd/src/server.c), [yashd/src/log.c](yashd/src/log.c) | new: sockets, accept loop, logging |
+| — | [yash/src/client.c](yash/src/client.c) | new: the client program |
+
+`parse.c` and `redirect.c` crossing over untouched is a reasonable measure of
+how well Project 1's module boundaries held up.
+
+### Where `sig.c` went
+
+It has no counterpart, because its whole purpose — owning the terminal — no
+longer exists. Its responsibilities scattered:
+
+| Project 1 responsibility | Project 2 home |
 |---|---|
-| `fgets(line, ..., stdin)` | `session_readsocket(s, line, n)` |
-| every line is a command | `CMD` / `CTL` / plain text, via `dispatch` |
-| `fputs("# ", stdout)` | `session_prompt(s)` sends `"\n# "` |
-| `printf` for job lines | `session_printf(s, ...)` |
-| child inherits stdout | `dup2(s->cfd, STDOUT_FILENO)` |
-| child inherits the terminal's stdin | `dup2(job->infd pipe, STDIN_FILENO)` |
-| tty delivers SIGINT/SIGTSTP | `kill(-pgid, ...)` on a `CTL` message |
-| `tcsetpgrp` hands over the terminal | deleted — there is no terminal |
-| `waitpid(-1, ...)` | `waitpid(-job->pgid, ...)` |
-| globals in `jobs.c` and `sig.c` | fields of `session_t` |
-| one process | one detached pthread per client |
+| shell's own SIGINT/SIGTSTP no-op handlers | gone; the daemon has no tty sending it either |
+| `SIGPIPE` so a dead client can't kill the daemon | [yashd/src/main.c](yashd/src/main.c#L27) |
+| child reset to `SIG_DFL` before `exec` | [yashd/src/exec.c](yashd/src/exec.c#L16) `reset_child_signals` |
+| delivering Ctrl-c / Ctrl-z to the job | [yashd/src/session.c](yashd/src/session.c#L162) `handle_ctl` |
+| `tcsetpgrp` terminal hand-off | deleted |
+| catching the keystrokes in the first place | [yash/src/client.c](yash/src/client.c#L72) `on_signal` |
 
-`parse.c` and `redirect.c` are the only files that crossed over untouched,
-which is a reasonable measure of how well Project 1's module boundaries held up.
+### The deviations, one by one
+
+| Concern | Project 1 | Project 2 | Where to look |
+|---|---|---|---|
+| Read a line | `fgets(line, ..., stdin)` | `session_readsocket` | [session.c](yashd/src/session.c#L141) |
+| Message framing | none needed — `fgets` hid it | `buf_fill` + `buf_take_line` | [session.c](yashd/src/session.c#L101-L140) |
+| What a line *is* | always a command | `CMD` / `CTL` / plain text | [session.c](yashd/src/session.c#L232-L253) |
+| The prompt | `fputs("# ", stdout)` | `session_prompt` sends `"\n# "` | [session.c](yashd/src/session.c#L90) |
+| Shell's own output | `printf` | `session_printf` | [session.c](yashd/src/session.c#L72) |
+| Command stdout/stderr | inherited from the terminal | `dup2(s->cfd, ...)` | [exec.c](yashd/src/exec.c#L71) |
+| Command stdin | inherited from the terminal | `dup2(inpipe[0], ...)`, fed by `handle_text` | [exec.c](yashd/src/exec.c#L67), [session.c](yashd/src/session.c#L194) |
+| Ctrl-c / Ctrl-z | tty signals the foreground group | `kill(-pgid, ...)` on a `CTL` message | [session.c](yashd/src/session.c#L162) |
+| Terminal ownership | `tcsetpgrp` before and after each job | deleted — there is no terminal | — |
+| Reaping | `waitpid(-1, ...)` — any child | `waitpid(-job->pgid, ...)` — this session's only | [jobs.c](yashd/src/jobs.c#L157) |
+| Foreground wait | blocking `waitpid` | alternates `session_pump` and `poll_job` | [jobs.c](yashd/src/jobs.c#L213) |
+| Background sweep | one `waitpid(-1)` loop | per-job poll, then `Done` lines | [jobs.c](yashd/src/jobs.c#L184) |
+| Global state | statics in `jobs.c` and `sig.c` | fields of `session_t` | [session.h](yashd/include/session.h#L14) |
+| Concurrency | one process | one detached pthread per client | [server.c](yashd/src/server.c#L39) |
+| Startup | `main` runs the shell | detach, lock a pid file, then accept | [daemon.c](yashd/src/daemon.c#L44) |
+| Auditing | none | one `write` per command, under a mutex | [log.c](yashd/src/log.c#L27) |
+
+### Client-side landmarks
+
+There is no Project 1 equivalent for any of this.
+
+| Concern | Where to look |
+|---|---|
+| Connecting, TCP and AF_UNIX | [client.c](yash/src/client.c#L22), [client.c](yash/src/client.c#L49) |
+| Signal handlers that only raise a flag | [client.c](yash/src/client.c#L72-L95) |
+| The `pselect` loop over stdin and the socket | [client.c](yash/src/client.c#L165) |
+| Prompt detection from the byte stream | [client.c](yash/src/client.c#L131) `push_tail` |
+| `CMD` vs. plain text, and the `quit` keyword | [client.c](yash/src/client.c#L151) `send_line` |
