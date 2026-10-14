@@ -11,22 +11,47 @@ wsl -d Ubuntu
 ## Build
 
 ```bash
-cd "/mnt/c/Users/Isaac/Documents/System-prog/Project 2"
+cd "/mnt/c/Users/Isaac/Documents/System-prog/Project 2/yashd"
 make
 ```
 
-Both binaries land in `bin/`:
+Both binaries land next to the `Makefile`:
 
 | | |
 |---|---|
-| `bin/yashd` | the daemon |
-| `bin/yash` | the client |
+| `./yashd` | the daemon |
+| `./yash` | the client |
 
-`make server` and `make client` build one side alone. `make clean` removes
-`build/` and `bin/`.
+`make yashd` and `make yash` build one side alone. `make clean` removes
+`build/` and both binaries.
 
-> The binaries go in `bin/` because a file named `yash` at the project root
-> would collide with the `yash/` source directory.
+## Layout
+
+The code lives in `yashd/`, which is the folder that gets submitted. The docs
+and test scripts sit beside it:
+
+```
+Project 2/
+  DESIGN.md USAGE.md SPEC.md PROTOCOL.md
+  test_yashd.py test_yash.py
+  yashd/                        <- submitted as yashd.tgz
+    Makefile
+    shared/include/protocol.h   shared by both programs
+    server/{include,src}/       the daemon
+    client/{include,src}/       the client
+    build/                      object files (generated)
+    yashd, yash                 binaries (generated)
+```
+
+> The source directories are named `server/` and `client/` rather than after
+> the programs, because a file named `yash` cannot coexist with a directory
+> named `yash`.
+
+Package the submission from `Project 2/`:
+
+```bash
+tar czf yashd.tgz yashd
+```
 
 ## Two-terminal walkthrough
 
@@ -36,12 +61,12 @@ the client.
 ### Terminal 1 — start the daemon
 
 ```bash
-cd "/mnt/c/Users/Isaac/Documents/System-prog/Project 2"
+cd "/mnt/c/Users/Isaac/Documents/System-prog/Project 2/yashd"
 
 pkill -x yashd                      # clear any previous instance
 rm -f /tmp/yashd.log /tmp/yashd.pid
 
-./bin/yashd                         # detaches and returns immediately
+./yashd                         # detaches and returns immediately
 pgrep -x yashd                      # should print one pid
 ```
 
@@ -58,8 +83,8 @@ tail -f /tmp/yashd.log
 ### Terminal 2 — connect a client
 
 ```bash
-cd "/mnt/c/Users/Isaac/Documents/System-prog/Project 2"
-./bin/yash 127.0.0.1
+cd "/mnt/c/Users/Isaac/Documents/System-prog/Project 2/yashd"
+./yash 127.0.0.1
 ```
 
 The IP is the only argument; the port is hardcoded at 3820. You should see:
@@ -205,8 +230,8 @@ For local testing, both sides take `-u` and use `/tmp/yashd.sock` instead of
 TCP:
 
 ```bash
-./bin/yashd -u
-./bin/yash -u
+./yashd -u
+./yash -u
 ```
 
 Everything above the socket is identical. Only the log line differs: an
@@ -270,6 +295,8 @@ To confirm sessions are isolated, connect a second client and run `sleep 99 &`
 in it. Each client's `jobs` shows only its own.
 
 ## Automated tests
+
+Run these from `Project 2/`, one level above the code:
 
 ```bash
 cd "/mnt/c/Users/Isaac/Documents/System-prog/Project 2"

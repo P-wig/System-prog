@@ -1,0 +1,5 @@
+build/
+yashd
+yash
+*.o
+*.d

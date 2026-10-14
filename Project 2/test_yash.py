@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drives bin/yash through a pty against a live bin/yashd."""
+"""Drives yash through a pty against a live yashd."""
 import os, pty, select, signal, subprocess, sys, time
 
 PASS = FAIL = 0
@@ -22,7 +22,7 @@ class Term:
         self.dead = False
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
-            os.execv("./bin/yash", ["yash"] + list(args))
+            os.execv("./yashd/yash", ["yash"] + list(args))
         self.out = ""
         self.drain(0.6)
 
@@ -97,7 +97,7 @@ for stale in ("/tmp/yashd.log", "/tmp/yashd.pid"):
 subprocess.run(["pkill", "-x", "yashd"])
 time.sleep(0.2)
 print("starting yashd")
-subprocess.run(["./bin/yashd"], check=True)
+subprocess.run(["./yashd/yashd"], check=True)
 time.sleep(0.4)
 
 print("\nconnection and prompt")
@@ -182,10 +182,10 @@ check("the client's jobs die with it",
 t3.kill()
 
 print("\nerror handling")
-bad = subprocess.run(["./bin/yash", "999.999.999.999"], capture_output=True)
+bad = subprocess.run(["./yashd/yash", "999.999.999.999"], capture_output=True)
 check("rejects a non-address", b"not an IPv4 address" in bad.stderr)
 check("non-zero exit on bad address", bad.returncode != 0)
-noargs = subprocess.run(["./bin/yash"], capture_output=True)
+noargs = subprocess.run(["./yashd/yash"], capture_output=True)
 check("usage message with no arguments", b"usage" in noargs.stderr)
 
 print("\nlog")
@@ -196,7 +196,7 @@ check("control messages were not logged", "CTL" not in log)
 subprocess.run(["pkill", "-x", "yashd"])
 subprocess.run(["pkill", "-f", "sleep 6"])
 time.sleep(0.4)
-refused = subprocess.run(["./bin/yash", "127.0.0.1"], capture_output=True,
+refused = subprocess.run(["./yashd/yash", "127.0.0.1"], capture_output=True,
                          stdin=subprocess.DEVNULL, timeout=15)
 check("reports a refused connection", refused.returncode != 0 and
       b"onnection refused" in refused.stderr, repr(refused.stderr))

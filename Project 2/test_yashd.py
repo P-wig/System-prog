@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drives bin/yashd over the wire protocol and checks the responses."""
+"""Drives yashd over the wire protocol and checks the responses."""
 import os, socket, subprocess, sys, time
 
 HOST, PORT = "127.0.0.1", 3820
@@ -51,7 +51,7 @@ print("starting yashd")
 for stale in ("/tmp/yashd.log", "/tmp/yashd.pid"):
     if os.path.exists(stale):
         os.remove(stale)
-subprocess.run(["./bin/yashd"], check=True)
+subprocess.run(["./yashd/yashd"], check=True)
 time.sleep(0.4)
 
 c = Client()

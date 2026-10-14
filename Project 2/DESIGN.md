@@ -363,7 +363,7 @@ buffer and emitted with a **single** `write` under a mutex — a sequence of
 `printf`-style calls would let two threads interleave fragments of different
 entries.
 
-## The client — yash/src/client.c
+## The client — yashd/client/src/client.c
 
 The client has no shell logic at all: no parser, no `fork`, no job table. It
 connects, pumps bytes, and translates two keystrokes.
@@ -439,16 +439,16 @@ where to find it in the code. Paths are relative to `Project 2/`.
 
 | Project 1 | Project 2 | What happened |
 |---|---|---|
-| `main.c` — the read loop | [yashd/src/session.c](yashd/src/session.c#L286) | became `session_main`, one running copy per client |
-| `main.c` — startup | [yashd/src/main.c](yashd/src/main.c#L15), [yashd/src/daemon.c](yashd/src/daemon.c#L44) | argument parsing and detaching |
+| `main.c` — the read loop | [yashd/server/src/session.c](yashd/server/src/session.c#L286) | became `session_main`, one running copy per client |
+| `main.c` — startup | [yashd/server/src/main.c](yashd/server/src/main.c#L15), [yashd/server/src/daemon.c](yashd/server/src/daemon.c#L44) | argument parsing and detaching |
 | `sig.c` | — | dissolved into three places; see below |
-| `jobs.c` | [yashd/src/jobs.c](yashd/src/jobs.c) | job list moved into `session_t`, waits rescoped |
-| `exec.c` | [yashd/src/exec.c](yashd/src/exec.c#L31) | same fork/exec, different descriptors |
-| `builtins.c` | [yashd/src/builtins.c](yashd/src/builtins.c) | output retargeted, `tcsetpgrp` dropped |
-| `parse.c` | [yashd/src/parse.c](yashd/src/parse.c) | **unchanged** |
-| `redirect.c` | [yashd/src/redirect.c](yashd/src/redirect.c) | **unchanged** |
-| — | [yashd/src/transport.c](yashd/src/transport.c), [yashd/src/server.c](yashd/src/server.c), [yashd/src/log.c](yashd/src/log.c) | new: sockets, accept loop, logging |
-| — | [yash/src/client.c](yash/src/client.c) | new: the client program |
+| `jobs.c` | [yashd/server/src/jobs.c](yashd/server/src/jobs.c) | job list moved into `session_t`, waits rescoped |
+| `exec.c` | [yashd/server/src/exec.c](yashd/server/src/exec.c#L31) | same fork/exec, different descriptors |
+| `builtins.c` | [yashd/server/src/builtins.c](yashd/server/src/builtins.c) | output retargeted, `tcsetpgrp` dropped |
+| `parse.c` | [yashd/server/src/parse.c](yashd/server/src/parse.c) | **unchanged** |
+| `redirect.c` | [yashd/server/src/redirect.c](yashd/server/src/redirect.c) | **unchanged** |
+| — | [yashd/server/src/transport.c](yashd/server/src/transport.c), [yashd/server/src/server.c](yashd/server/src/server.c), [yashd/server/src/log.c](yashd/server/src/log.c) | new: sockets, accept loop, logging |
+| — | [yashd/client/src/client.c](yashd/client/src/client.c) | new: the client program |
 
 `parse.c` and `redirect.c` crossing over untouched is a reasonable measure of
 how well Project 1's module boundaries held up.
@@ -461,32 +461,32 @@ longer exists. Its responsibilities scattered:
 | Project 1 responsibility | Project 2 home |
 |---|---|
 | shell's own SIGINT/SIGTSTP no-op handlers | gone; the daemon has no tty sending it either |
-| `SIGPIPE` so a dead client can't kill the daemon | [yashd/src/main.c](yashd/src/main.c#L27) |
-| child reset to `SIG_DFL` before `exec` | [yashd/src/exec.c](yashd/src/exec.c#L16) `reset_child_signals` |
-| delivering Ctrl-c / Ctrl-z to the job | [yashd/src/session.c](yashd/src/session.c#L162) `handle_ctl` |
+| `SIGPIPE` so a dead client can't kill the daemon | [yashd/server/src/main.c](yashd/server/src/main.c#L27) |
+| child reset to `SIG_DFL` before `exec` | [yashd/server/src/exec.c](yashd/server/src/exec.c#L16) `reset_child_signals` |
+| delivering Ctrl-c / Ctrl-z to the job | [yashd/server/src/session.c](yashd/server/src/session.c#L162) `handle_ctl` |
 | `tcsetpgrp` terminal hand-off | deleted |
-| catching the keystrokes in the first place | [yash/src/client.c](yash/src/client.c#L72) `on_signal` |
+| catching the keystrokes in the first place | [yashd/client/src/client.c](yashd/client/src/client.c#L72) `on_signal` |
 
 ### The deviations, one by one
 
 | Concern | Project 1 | Project 2 | Where to look |
 |---|---|---|---|
-| Read a line | `fgets(line, ..., stdin)` | `session_readsocket` | [session.c](yashd/src/session.c#L141) |
-| Message framing | none needed — `fgets` hid it | `buf_fill` + `buf_take_line` | [session.c](yashd/src/session.c#L101-L140) |
-| What a line *is* | always a command | `CMD` / `CTL` / plain text | [session.c](yashd/src/session.c#L232-L253) |
-| The prompt | `fputs("# ", stdout)` | `session_prompt` sends `"\n# "` | [session.c](yashd/src/session.c#L90) |
-| Shell's own output | `printf` | `session_printf` | [session.c](yashd/src/session.c#L72) |
-| Command stdout/stderr | inherited from the terminal | `dup2(s->cfd, ...)` | [exec.c](yashd/src/exec.c#L71) |
-| Command stdin | inherited from the terminal | `dup2(inpipe[0], ...)`, fed by `handle_text` | [exec.c](yashd/src/exec.c#L67), [session.c](yashd/src/session.c#L194) |
-| Ctrl-c / Ctrl-z | tty signals the foreground group | `kill(-pgid, ...)` on a `CTL` message | [session.c](yashd/src/session.c#L162) |
+| Read a line | `fgets(line, ..., stdin)` | `session_readsocket` | [session.c](yashd/server/src/session.c#L141) |
+| Message framing | none needed — `fgets` hid it | `buf_fill` + `buf_take_line` | [session.c](yashd/server/src/session.c#L101-L140) |
+| What a line *is* | always a command | `CMD` / `CTL` / plain text | [session.c](yashd/server/src/session.c#L232-L253) |
+| The prompt | `fputs("# ", stdout)` | `session_prompt` sends `"\n# "` | [session.c](yashd/server/src/session.c#L90) |
+| Shell's own output | `printf` | `session_printf` | [session.c](yashd/server/src/session.c#L72) |
+| Command stdout/stderr | inherited from the terminal | `dup2(s->cfd, ...)` | [exec.c](yashd/server/src/exec.c#L71) |
+| Command stdin | inherited from the terminal | `dup2(inpipe[0], ...)`, fed by `handle_text` | [exec.c](yashd/server/src/exec.c#L67), [session.c](yashd/server/src/session.c#L194) |
+| Ctrl-c / Ctrl-z | tty signals the foreground group | `kill(-pgid, ...)` on a `CTL` message | [session.c](yashd/server/src/session.c#L162) |
 | Terminal ownership | `tcsetpgrp` before and after each job | deleted — there is no terminal | — |
-| Reaping | `waitpid(-1, ...)` — any child | `waitpid(-job->pgid, ...)` — this session's only | [jobs.c](yashd/src/jobs.c#L157) |
-| Foreground wait | blocking `waitpid` | alternates `session_pump` and `poll_job` | [jobs.c](yashd/src/jobs.c#L213) |
-| Background sweep | one `waitpid(-1)` loop | per-job poll, then `Done` lines | [jobs.c](yashd/src/jobs.c#L184) |
-| Global state | statics in `jobs.c` and `sig.c` | fields of `session_t` | [session.h](yashd/include/session.h#L14) |
-| Concurrency | one process | one detached pthread per client | [server.c](yashd/src/server.c#L39) |
-| Startup | `main` runs the shell | detach, lock a pid file, then accept | [daemon.c](yashd/src/daemon.c#L44) |
-| Auditing | none | one `write` per command, under a mutex | [log.c](yashd/src/log.c#L27) |
+| Reaping | `waitpid(-1, ...)` — any child | `waitpid(-job->pgid, ...)` — this session's only | [jobs.c](yashd/server/src/jobs.c#L157) |
+| Foreground wait | blocking `waitpid` | alternates `session_pump` and `poll_job` | [jobs.c](yashd/server/src/jobs.c#L213) |
+| Background sweep | one `waitpid(-1)` loop | per-job poll, then `Done` lines | [jobs.c](yashd/server/src/jobs.c#L184) |
+| Global state | statics in `jobs.c` and `sig.c` | fields of `session_t` | [session.h](yashd/server/include/session.h#L14) |
+| Concurrency | one process | one detached pthread per client | [server.c](yashd/server/src/server.c#L39) |
+| Startup | `main` runs the shell | detach, lock a pid file, then accept | [daemon.c](yashd/server/src/daemon.c#L44) |
+| Auditing | none | one `write` per command, under a mutex | [log.c](yashd/server/src/log.c#L27) |
 
 ### Client-side landmarks
 
@@ -494,8 +494,8 @@ There is no Project 1 equivalent for any of this.
 
 | Concern | Where to look |
 |---|---|
-| Connecting, TCP and AF_UNIX | [client.c](yash/src/client.c#L22), [client.c](yash/src/client.c#L49) |
-| Signal handlers that only raise a flag | [client.c](yash/src/client.c#L72-L95) |
-| The `pselect` loop over stdin and the socket | [client.c](yash/src/client.c#L165) |
-| Prompt detection from the byte stream | [client.c](yash/src/client.c#L131) `push_tail` |
-| `CMD` vs. plain text, and the `quit` keyword | [client.c](yash/src/client.c#L151) `send_line` |
+| Connecting, TCP and AF_UNIX | [client.c](yashd/client/src/client.c#L22), [client.c](yashd/client/src/client.c#L49) |
+| Signal handlers that only raise a flag | [client.c](yashd/client/src/client.c#L72-L95) |
+| The `pselect` loop over stdin and the socket | [client.c](yashd/client/src/client.c#L165) |
+| Prompt detection from the byte stream | [client.c](yashd/client/src/client.c#L131) `push_tail` |
+| `CMD` vs. plain text, and the `quit` keyword | [client.c](yashd/client/src/client.c#L151) `send_line` |
