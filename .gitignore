@@ -1,0 +1,19 @@
+# Build output
+build/
+*.o
+*.d
+*.a
+
+# Pintos simulator artifacts
+*.dsk
+bochsout.txt
+bochsrc.txt
+.bochsrc
+
+# Submission tarballs
+*.tgz
+
+# Editor / OS
+.vscode/
+.DS_Store
+*.swp
