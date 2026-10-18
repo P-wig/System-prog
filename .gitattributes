@@ -1,0 +1,23 @@
+# Pintos scripts and sources are consumed by Linux tooling; CRLF breaks
+# shebangs and the i386 assembler.
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.pm text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.S text eol=lf
+Makefile* text eol=lf
+Make.* text eol=lf
+
+# Extensionless Perl/shell utilities in Project_3/utils
+Project_3/utils/pintos text eol=lf
+Project_3/utils/pintos-gdb text eol=lf
+Project_3/utils/pintos-mkdisk text eol=lf
+Project_3/utils/pintos-set-cmdline text eol=lf
+Project_3/utils/backtrace text eol=lf
+Project_3/utils/runtest text eol=lf
+Project_3/tests/make-grade text eol=lf
+
+*.dsk binary
+*.bin binary

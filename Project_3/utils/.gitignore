@@ -1,0 +1,6 @@
+setitimer-helper
+squish-pty
+squish-unix
+
+# symlink created by install.sh; unreadable by Git for Windows
+qemu
