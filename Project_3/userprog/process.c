@@ -52,7 +52,7 @@ struct start_process_args {
 };
 
 static thread_func start_process NO_RETURN;
-static bool load(const char *cmdline, void(**eip) (void), void **esp);
+static bool load(char *cmdline, void(**eip) (void), void **esp);
 
 static void release_child_status(struct process_status *ps);
 
@@ -65,6 +65,9 @@ process_execute(const char *file_name)
 {
     struct start_process_args *args;
     struct process_status *ps;
+    char prog_name[16]; /* Just the program name, for the new thread's name. */
+    const char *space;
+    size_t prog_name_len;
     tid_t tid;
 
     // NOTE:
@@ -103,8 +106,21 @@ process_execute(const char *file_name)
      * run (and even finish) before thread_create() returns below. */
     list_push_back(&thread_current()->children, &ps->elem);
 
+    /* The thread's name should be just the program name, not the
+     * whole command line -- e.g. sys_exit()'s "%s: exit(%d)\n"
+     * message is keyed off of it and tests expect only the
+     * program name there. */
+    space = strchr(file_name, ' ');
+    prog_name_len = space != NULL ? (size_t)(space - file_name)
+                                   : strlen(file_name);
+    if (prog_name_len >= sizeof prog_name) {
+        prog_name_len = sizeof prog_name - 1;
+    }
+    memcpy(prog_name, file_name, prog_name_len);
+    prog_name[prog_name_len] = '\0';
+
     /* Create a new thread to execute FILE_NAME. */
-    tid = thread_create(file_name, PRI_DEFAULT, start_process, args);
+    tid = thread_create(prog_name, PRI_DEFAULT, start_process, args);
     if (tid == TID_ERROR) {
         list_remove(&ps->elem);
         palloc_free_page(args->file_name);
@@ -221,6 +237,17 @@ process_exit(void)
 {
     struct thread *cur = thread_current();
     uint32_t *pd;
+
+    /* Report our exit status now, whether we got here via
+     * sys_exit() or because the kernel killed us for a bad
+     * instruction/access (see exception.c's kill()) -- either way
+     * cur->exit_status already holds the right value (set by
+     * sys_exit(), or its init_thread()-assigned default of -1).
+     * Gated on pagedir so kernel-only threads (which never call
+     * process_exit() with a loaded user program) don't print this. */
+    if (cur->pagedir != NULL) {
+        printf("%s: exit(%d)\n", thread_name(), cur->exit_status);
+    }
 
     /* Close any files this process still had open; otherwise every
      * exiting process would leak its open `struct file's. */
@@ -340,17 +367,24 @@ struct Elf32_Phdr {
 #define PF_W 2 /* Writable. */
 #define PF_R 4 /* Readable. */
 
-static bool setup_stack(void **esp);
+/* Command lines have no fixed length limit beyond fitting in the
+ * PGSIZE-byte page process_execute() copies them into, but we cap
+ * the number of tokens so a hostile/garbled command line can't
+ * overrun the fixed-size argv[] arrays below. */
+#define MAX_ARGS 32
+
+static bool setup_stack(void **esp, char *argv[], int argc);
 
 static bool validate_segment(const struct Elf32_Phdr *, struct file *);
 static bool load_segment(struct file *file, off_t ofs, uint8_t *upage, uint32_t read_bytes, uint32_t zero_bytes, bool writable);
 
-/* Loads an ELF executable from FILE_NAME into the current thread.
- * Stores the executable's entry point into *EIP
+/* Loads an ELF executable from FILE_NAME (which may include
+ * space-separated arguments after the program name) into the
+ * current thread.  Stores the executable's entry point into *EIP
  * and its initial stack pointer into *ESP.
  * Returns true if successful, false otherwise. */
 bool
-load(const char *file_name, void(**eip) (void), void **esp)
+load(char *file_name, void(**eip) (void), void **esp)
 {
     log(L_TRACE, "load()");
     struct thread *t = thread_current();
@@ -359,6 +393,26 @@ load(const char *file_name, void(**eip) (void), void **esp)
     off_t file_ofs;
     bool success = false;
     int i;
+    char *argv[MAX_ARGS];
+    int argc = 0;
+    char *token, *save_ptr;
+
+    /* Split FILE_NAME into the program name (argv[0]) and its
+     * arguments.  This mutates FILE_NAME in place, which is fine:
+     * it lives in a page start_process() owns and frees once
+     * load() returns, and we're done reading from it by then. */
+    for (token = strtok_r(file_name, " ", &save_ptr); token != NULL;
+         token = strtok_r(NULL, " ", &save_ptr)) {
+        if (argc >= MAX_ARGS) {
+            printf("load: %s: too many arguments\n", file_name);
+            goto done;
+        }
+        argv[argc++] = token;
+    }
+    if (argc == 0) {
+        printf("load: empty command line\n");
+        goto done;
+    }
 
     /* Allocate and activate page directory. */
     t->pagedir = pagedir_create();
@@ -368,9 +422,9 @@ load(const char *file_name, void(**eip) (void), void **esp)
     process_activate();
 
     /* Open executable file. */
-    file = filesys_open(file_name);
+    file = filesys_open(argv[0]);
     if (file == NULL) {
-        printf("load: %s: open failed\n", file_name);
+        printf("load: %s: open failed\n", argv[0]);
         goto done;
     }
 
@@ -442,8 +496,9 @@ load(const char *file_name, void(**eip) (void), void **esp)
         }
     }
 
-    /* Set up stack. */
-    if (!setup_stack(esp)) {
+    /* Set up stack, including argc/argv per the 80x86 calling
+     * convention. */
+    if (!setup_stack(esp, argv, argc)) {
         goto done;
     }
 
@@ -574,27 +629,108 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
     return true;
 }
 
-/* Create a minimal stack by mapping a zeroed page at the top of
- * user virtual memory. */
+/* Maps a zeroed page at the top of user virtual memory, then
+ * pushes ARGC strings from ARGV onto it and lays out the rest of
+ * the initial stack exactly as cdecl's `_start(int argc, char
+ * *argv[])' expects: the argument strings, a word-aligned,
+ * null-terminated argv[] pointer array, then argv, argc, and a
+ * fake return address.  See the Pintos documentation's "Program
+ * Startup Details" for the stack diagram this follows. */
 static bool
-setup_stack(void **esp)
+setup_stack(void **esp, char *argv[], int argc)
 {
     uint8_t *kpage;
-    bool success = false;
+    uint8_t *upage = ((uint8_t *)PHYS_BASE) - PGSIZE;
+    size_t   used = 0; /* Bytes consumed, counting down from the page's top. */
+    char    *arg_uaddr[MAX_ARGS]; /* User address of each pushed string. */
+    char   **argv_uaddr;
+    size_t   aligned;
+    int      i;
 
     log(L_TRACE, "setup_stack()");
 
     kpage = palloc_get_page(PAL_USER | PAL_ZERO);
-    if (kpage != NULL) {
-        success = install_page(((uint8_t *)PHYS_BASE) - PGSIZE, kpage, true);
-        if (success) {
-            *esp = PHYS_BASE;
-        } else {
-            palloc_free_page(kpage);
-        }
-        // hex_dump( *(int*)esp, *esp, 128, true ); // NOTE: uncomment this to check arg passing
+    if (kpage == NULL) {
+        return false;
     }
-    return success;
+    if (!install_page(upage, kpage, true)) {
+        palloc_free_page(kpage);
+        return false;
+    }
+
+    /* Argument strings, ARGC - 1 down to 0, so ARGV[0]'s bytes end
+     * up at the lowest address and ARGV[ARGC - 1]'s at the
+     * highest. */
+    for (i = argc - 1; i >= 0; i--) {
+        size_t len = strlen(argv[i]) + 1;
+
+        if (used + len > PGSIZE) {
+            goto too_long;
+        }
+        used += len;
+        memcpy(kpage + PGSIZE - used, argv[i], len);
+        arg_uaddr[i] = (char *)(upage + PGSIZE - used);
+    }
+
+    /* Word-align what follows, per the calling convention. */
+    aligned = ROUND_UP(used, sizeof(char *));
+    if (aligned > PGSIZE) {
+        goto too_long;
+    }
+    used = aligned;
+
+    /* Null sentinel for argv[argc]. */
+    if (used + sizeof(char *) > PGSIZE) {
+        goto too_long;
+    }
+    used += sizeof(char *);
+    *(char **)(kpage + PGSIZE - used) = NULL;
+
+    /* argv[] pointers, ARGC - 1 down to 0, so ARGV[0]'s pointer
+     * ends up at the lowest address of the array -- i.e. becomes
+     * "argv" itself. */
+    for (i = argc - 1; i >= 0; i--) {
+        if (used + sizeof(char *) > PGSIZE) {
+            goto too_long;
+        }
+        used += sizeof(char *);
+        *(char **)(kpage + PGSIZE - used) = arg_uaddr[i];
+    }
+    argv_uaddr = (char **)(upage + PGSIZE - used);
+
+    /* argv. */
+    if (used + sizeof(char **) > PGSIZE) {
+        goto too_long;
+    }
+    used += sizeof(char **);
+    *(char ***)(kpage + PGSIZE - used) = argv_uaddr;
+
+    /* argc. */
+    if (used + sizeof(int) > PGSIZE) {
+        goto too_long;
+    }
+    used += sizeof(int);
+    *(int *)(kpage + PGSIZE - used) = argc;
+
+    /* Fake return address.  _start() never returns, but cdecl
+     * still expects one here. */
+    if (used + sizeof(void *) > PGSIZE) {
+        goto too_long;
+    }
+    used += sizeof(void *);
+    *(void **)(kpage + PGSIZE - used) = NULL;
+
+    *esp = upage + PGSIZE - used;
+    // hex_dump(*(int *)esp, *esp, used, true); // NOTE: uncomment this to check arg passing
+    return true;
+
+too_long:
+    /* The command line doesn't fit in the single page we give the
+     * initial stack. */
+    printf("load: command line too long for the initial stack\n");
+    pagedir_clear_page(thread_current()->pagedir, upage);
+    palloc_free_page(kpage);
+    return false;
 }
 
 /* Adds a mapping from user virtual address UPAGE to kernel

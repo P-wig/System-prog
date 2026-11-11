@@ -90,40 +90,44 @@ Still expected to fail `make check`: every userprog test's `main()` reads
 violation error reading page`). That's TODO #3's job, not a regression
 here.
 
-### 3. Argument passing — [process.c](userprog/process.c)
-`load()` passes the raw command line straight to `filesys_open()` — it never
-splits off arguments:
+### 3. Argument passing — [process.c](userprog/process.c) ✅ Done
+`load()` used to pass the raw command line straight to `filesys_open()`, and
+`setup_stack()` only zero-mapped a page and pointed `esp` at `PHYS_BASE`
+without pushing anything onto it.
 
-```c
-file = filesys_open(file_name);
-```
+- [x] `load()` now tokenizes the command line with `strtok_r()` into an
+      `argv[]`/`argc` (capped at `MAX_ARGS` = 32), opens only `argv[0]` via
+      `filesys_open()`, and passes `argv`/`argc` through to `setup_stack()`.
+- [x] `setup_stack()` builds the full initial stack: argument strings
+      (highest address = last arg, matching the Pintos docs' example),
+      4-byte alignment padding, a null `argv[argc]` sentinel, the `argv[]`
+      pointer array, `argv`, `argc`, and a fake return address — each push
+      bounds-checked against the single stack page (fails cleanly instead
+      of overflowing if the command line is too long).
+- [x] `process_execute()` now also extracts just the program name (before
+      the first space) to use as the new thread's name, since the whole
+      command line was getting truncated into `thread_name()` and breaking
+      the `"%s: exit(%d)\n"` message tests check for.
+- [x] Along the way, found and fixed a gap from TODO #2: the exit message
+      was only printed by `sys_exit()`, so processes killed by the kernel
+      (bad pointer/bad jump tests) never printed `"name: exit(-1)"`. Moved
+      that `printf()` into `process_exit()` itself (gated on
+      `pagedir != NULL`) so it fires for both voluntary `exit()` calls and
+      kernel-forced kills.
 
-and `setup_stack()` only zero-maps a page and points `esp` at `PHYS_BASE`;
-nothing is pushed onto it:
-
-```c
-static bool
-setup_stack(void **esp)
-{
-    ...
-    success = install_page(((uint8_t *)PHYS_BASE) - PGSIZE, kpage, true);
-    if (success) {
-        *esp = PHYS_BASE;
-    } else { ... }
-    // hex_dump( *(int*)esp, *esp, 128, true ); // NOTE: uncomment this to check arg passing
-    ...
-}
-```
-
-TODO:
-- [ ] Tokenize the command line (program name + arguments, e.g. with
-      `strtok_r`) before calling `filesys_open()` so only the executable name
-      is opened.
-- [ ] Push the argument strings, a null sentinel, `argv[]` pointers, `argv`,
-      `argc`, and a fake return address onto the stack in `setup_stack()`,
-      following the x86 calling convention Pintos expects.
-- [ ] Uncomment the `hex_dump` line (or similar) to verify the stack layout
-      against the Pintos docs' example dump while developing.
+Verified: clean `make` rebuild with zero errors/warnings. `make check` went
+from "every test fails instantly" (page fault reading `argv[0]` before this
+TODO) to **95 passing**. The remaining 5 distinct failures are unrelated,
+pre-existing gaps, not regressions from this change:
+  - `exec-missing` — already-flagged limitation that `process_execute()`
+    doesn't report a child's load failure back to `exec()` synchronously.
+  - `rox-simple`, `rox-child`, `rox-multichild` — "deny writes to a running
+    executable" isn't implemented (no `file_deny_write()`/
+    `file_allow_write()` calls yet); a separate feature, not argument
+    passing.
+  - `syn-read` — a `tests/filesys/base` test whose child process fails to
+    open at exec time; looks like a test-harness/filesystem-size issue
+    unrelated to argument passing.
 
 ### 4. Design document — [userprog_design_doc.txt](userprog/userprog_design_doc.txt)
 - [ ] Fill in the blank "EE 461S Project 2: User Programs" template once the

@@ -223,11 +223,10 @@ static void
 sys_exit(int status)
 {
     /* Record our exit code so process_exit() (called from
-     * thread_exit() below) can hand it to a parent blocked in
-     * process_wait(). */
+     * thread_exit() below) can both print it and hand it to a
+     * parent blocked in process_wait(). */
     thread_current()->exit_status = status;
 
-    printf("%s: exit(%d)\n", thread_name(), status);
     thread_exit();
 }
 
