@@ -17,6 +17,7 @@
 #include "userprog/gdt.h"
 #include "userprog/pagedir.h"
 #include "userprog/process.h"
+#include "userprog/syscall.h"
 #include "userprog/tss.h"
 
 #define LOGGING_LEVEL 6
@@ -113,6 +114,10 @@ process_exit(void)
 {
     struct thread *cur = thread_current();
     uint32_t *pd;
+
+    /* Close any files this process still had open; otherwise every
+     * exiting process would leak its open `struct file's. */
+    syscall_close_all_files();
 
     /* Destroy the current process's page directory and switch back
      * to the kernel-only page directory. */

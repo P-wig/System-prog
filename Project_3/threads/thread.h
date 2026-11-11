@@ -94,6 +94,10 @@ struct thread {
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir; /* Page directory. */
+
+    /* Owned by userprog/syscall.c. */
+    struct list fd_list; /* Open files, as a list of struct fd_entry. */
+    int         fd_next; /* Next file descriptor number to hand out. */
 #endif
 
     /* Owned by thread.c. */

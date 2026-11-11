@@ -15,36 +15,39 @@ the [vm/](vm) project directory (its [Make.vars](vm/Make.vars) pulls in
 
 ## Module 1 — User Programs (`userprog/`)
 
-### 1. System call dispatch — [syscall.c](userprog/syscall.c)
-`syscall_handler()` is a placeholder:
+### 1. System call dispatch — [syscall.c](userprog/syscall.c) ✅ Done
+`syscall_handler()` was a placeholder that just printed `"system call!\n"`
+and exited. It's now implemented:
 
-```c
-static void
-syscall_handler(struct intr_frame *f UNUSED)
-{
-    /* Remove these when implementing syscalls */
-    printf("system call!\n");
+- [x] Reads the syscall number and arguments off `f->esp`, validating every
+      user-provided pointer/string/buffer first (`check_user_range()` /
+      `check_user_string()`); invalid pointers terminate the process via
+      `sys_exit(-1)` instead of crashing the kernel.
+- [x] Dispatches all of `SYS_HALT`, `SYS_EXIT`, `SYS_EXEC`, `SYS_WAIT`,
+      `SYS_CREATE`, `SYS_REMOVE`, `SYS_OPEN`, `SYS_FILESIZE`, `SYS_READ`,
+      `SYS_WRITE`, `SYS_SEEK`, `SYS_TELL`, `SYS_CLOSE`. `SYS_MMAP`/
+      `SYS_MUNMAP` currently just reject with `sys_exit(-1)` — real support
+      is deferred to the VM module below.
+- [x] Added per-process file descriptor tracking: `struct thread` now has
+      an `fd_list`/`fd_next` (see [thread.h](threads/thread.h)), populated
+      by `sys_open()` and walked by `lookup_fd()`. `process_exit()` calls
+      the new `syscall_close_all_files()` so a dying process doesn't leak
+      open files.
+- [x] Added a single global `filesys_lock` in syscall.c guarding every
+      `filesys_*()`/`file_*()` call, since the filesystem isn't reentrant.
 
-    thread_exit();
-}
-```
-
-TODO:
-- [ ] Read the syscall number and arguments off the interrupt frame's stack
-      (`f->esp`), validating every user-provided pointer before dereferencing
-      it (bad pointers must terminate the offending process, not crash the
-      kernel).
-- [ ] Dispatch on all syscall numbers defined in
-      [syscall-nr.h](lib/syscall-nr.h):
-      `SYS_HALT`, `SYS_EXIT`, `SYS_EXEC`, `SYS_WAIT`, `SYS_CREATE`,
-      `SYS_REMOVE`, `SYS_OPEN`, `SYS_FILESIZE`, `SYS_READ`, `SYS_WRITE`,
-      `SYS_SEEK`, `SYS_TELL`, `SYS_CLOSE` (the `SYS_MMAP`/`SYS_MUNMAP` pair is
-      project 3/4 territory, shared with the VM module below).
-- [ ] Add per-process file descriptor tracking (e.g. a list/array on
-      `struct thread`) so `open`/`read`/`write`/`close` etc. can map fds to
-      `struct file *`.
-- [ ] Synchronize filesystem access if multiple processes can call syscalls
-      concurrently (a single global filesystem lock is the usual approach).
+Known limitations, to be resolved by later TODO items in this file:
+- `sys_exit()`'s status isn't yet delivered to a waiting parent — that
+  lands with TODO #2 below (`process_wait()`).
+- `sys_exec()` doesn't yet block until the child finishes loading or learn
+  whether loading failed — same TODO #2.
+- End-to-end testing (`make check`) still fails: `threads/init.c`'s
+  `run_task()` does `process_wait(process_execute(task))`, and since
+  `process_wait()` is still a stub returning `-1` immediately, the kernel
+  powers off before the test process ever gets a CPU tick (confirmed via
+  `Thread: ... 0 user ticks` in test output). This is expected until TODO
+  #2 is implemented, not a syscall.c bug — verified by a clean `make`
+  rebuild of `userprog/` with zero errors/warnings.
 
 ### 2. Process exit status — [process.c](userprog/process.c)
 `process_wait()` is a stub:
