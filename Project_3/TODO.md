@@ -49,26 +49,46 @@ Known limitations, to be resolved by later TODO items in this file:
   #2 is implemented, not a syscall.c bug — verified by a clean `make`
   rebuild of `userprog/` with zero errors/warnings.
 
-### 2. Process exit status — [process.c](userprog/process.c)
-`process_wait()` is a stub:
+### 2. Process exit status — [process.c](userprog/process.c) ✅ Done
+`process_wait()` was a stub that returned `-1` immediately without waiting.
+It's now implemented:
 
-```c
-/* This function will be implemented in problem 2-2.  For now, it
- * does nothing. */
-int
-process_wait(tid_t child_tid UNUSED)
-{
-    return -1;
-}
-```
+- [x] Added a reference-counted `struct process_status` (private to
+      process.c), created in `process_execute()` and shared between parent
+      and child: the parent holds it in a new `children` list on
+      `struct thread`, the child holds it via a new `pstatus` pointer (see
+      [thread.h](threads/thread.h)). Either side may exit first, so each
+      side drops its own reference via `release_child_status()`, and
+      whichever drops the last one frees it.
+- [x] `process_wait()` looks the child up by tid in the caller's
+      `children` list (returning `-1` immediately if not found — covers
+      invalid tid, non-child tid, and "already waited" since a successful
+      wait removes the entry), then blocks on a semaphore
+      (`ps->dead`) until the child's `process_exit()` posts it.
+- [x] `process_exit()` now posts that semaphore and copies the process's
+      `exit_status` (a new field on `struct thread`, defaulting to `-1` —
+      the "killed by the kernel" case) into the shared record. It also
+      walks its own `children` list releasing any it never waited for, so
+      parent-exits-first doesn't leak.
+- [x] [syscall.c](userprog/syscall.c)'s `sys_exit()` now sets
+      `thread_current()->exit_status` before calling `thread_exit()`, wiring
+      the real exit code through to a waiting parent. The
+      `"%s: exit(%d)\n"` message was already in place from TODO #1.
 
-TODO:
-- [ ] Track parent/child relationships and exit status so a parent can
-      retrieve a child's real exit code exactly once.
-- [ ] Make `process_wait()` block until the specified child thread exits,
-      then return its exit status (or `-1` for bad/duplicate/non-child tids).
-- [ ] Wire the exit status through to `thread_exit()`/`process_exit()` and
-      print the `"%s: exit(%d)\n"` message tests expect.
+Verified: clean `make` rebuild of `userprog/` with zero errors/warnings.
+Before this change, every test showed `0 user ticks` in its log (the kernel
+powered off before the test process ever ran, because `process_wait()`
+returned instantly). After this change, e.g. `wait-simple`'s log shows
+`21 user ticks` and the child process actually executing — confirming
+`process_wait()` now genuinely blocks on the child instead of returning
+immediately.
+
+Still expected to fail `make check`: every userprog test's `main()` reads
+`argv[0]` (see [tests/main.c](tests/main.c)), and since argument passing
+(TODO #3 below) isn't implemented yet, the initial stack has no `argc`/
+`argv` on it, so tests now fault trying to read it (`Page fault ... rights
+violation error reading page`). That's TODO #3's job, not a regression
+here.
 
 ### 3. Argument passing — [process.c](userprog/process.c)
 `load()` passes the raw command line straight to `filesys_open()` — it never

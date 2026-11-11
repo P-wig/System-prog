@@ -95,9 +95,28 @@ struct thread {
     /* Owned by userprog/process.c. */
     uint32_t *pagedir; /* Page directory. */
 
+    /* This process's shared exit-status record (an opaque
+     * struct process_status, defined in process.c), or NULL if
+     * this thread has no parent tracking it (e.g. the first
+     * kernel thread).  Set once, before the thread starts
+     * running user code, and read/released by process_exit(). */
+    struct process_status *pstatus;
+
+    /* struct process_status entries for children this thread has
+     * started via process_execute() but not yet reaped with a
+     * successful process_wait(). */
+    struct list children;
+
     /* Owned by userprog/syscall.c. */
     struct list fd_list; /* Open files, as a list of struct fd_entry. */
     int         fd_next; /* Next file descriptor number to hand out. */
+
+    /* Set by syscall.c's sys_exit(); read by process.c's
+     * process_exit() to report this process's exit code to its
+     * parent.  Defaults to -1, the status Pintos specifies for a
+     * process killed by the kernel (e.g. due to an exception)
+     * rather than via the exit() syscall. */
+    int exit_status;
 #endif
 
     /* Owned by thread.c. */

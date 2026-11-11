@@ -482,6 +482,8 @@ init_thread(struct thread *t, const char *name, int priority)
 #ifdef USERPROG
     list_init(&t->fd_list);
     t->fd_next = 2; /* fd 0 and 1 are reserved for stdin/stdout. */
+    list_init(&t->children);
+    t->exit_status = -1; /* Overwritten by sys_exit(); see thread.h. */
 #endif
 
     old_level = intr_disable();

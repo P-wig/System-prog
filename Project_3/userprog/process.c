@@ -11,7 +11,9 @@
 #include "threads/flags.h"
 #include "threads/init.h"
 #include "threads/interrupt.h"
+#include "threads/malloc.h"
 #include "threads/palloc.h"
+#include "threads/synch.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "userprog/gdt.h"
@@ -24,8 +26,35 @@
 
 #include <log.h>
 
+/* Shared record tracking one child process's progress, created by
+ * process_execute() and consumed by the parent's process_wait().
+ * Parent and child both keep a pointer to it (the parent in its
+ * `children' list, the child via thread->pstatus) and either may
+ * exit first, so it's reference-counted rather than owned by
+ * either side alone: whichever of the two drops the last
+ * reference (release_child_status()) frees it. */
+struct process_status {
+    tid_t tid;       /* Child's thread id, for matching in process_wait(). */
+    int   exit_code; /* Set by the child in process_exit(). */
+
+    int         ref_cnt; /* 2 while parent and child are both alive. */
+    struct lock ref_lock; /* Protects ref_cnt. */
+
+    struct semaphore dead; /* Posted by the child when it exits. */
+    struct list_elem elem; /* Element in the parent's `children' list. */
+};
+
+/* Bundles the arguments start_process() needs; process_execute()
+ * can only pass a single `aux' pointer through thread_create(). */
+struct start_process_args {
+    char                   *file_name; /* Command line; a palloc'd page owned by this struct until start_process() frees it. */
+    struct process_status *ps;        /* New process's shared exit-status record. */
+};
+
 static thread_func start_process NO_RETURN;
 static bool load(const char *cmdline, void(**eip) (void), void **esp);
+
+static void release_child_status(struct process_status *ps);
 
 /* Starts a new thread running a user program loaded from
  * FILENAME.  The new thread may be scheduled (and may even exit)
@@ -34,7 +63,8 @@ static bool load(const char *cmdline, void(**eip) (void), void **esp);
 tid_t
 process_execute(const char *file_name)
 {
-    char *fn_copy;
+    struct start_process_args *args;
+    struct process_status *ps;
     tid_t tid;
 
     // NOTE:
@@ -43,18 +73,45 @@ process_execute(const char *file_name)
     // Also, probably won't pass with logging enabled.
     log(L_TRACE, "Started process execute: %s", file_name);
 
-    /* Make a copy of FILE_NAME.
-     * Otherwise there's a race between the caller and load(). */
-    fn_copy = palloc_get_page(0);
-    if (fn_copy == NULL) {
+    ps = malloc(sizeof *ps);
+    if (ps == NULL) {
         return TID_ERROR;
     }
-    strlcpy(fn_copy, file_name, PGSIZE);
+    ps->exit_code = -1;
+    ps->ref_cnt = 2; /* One reference each for the parent and the child. */
+    lock_init(&ps->ref_lock);
+    sema_init(&ps->dead, 0);
+
+    args = malloc(sizeof *args);
+    if (args == NULL) {
+        free(ps);
+        return TID_ERROR;
+    }
+
+    /* Make a copy of FILE_NAME.
+     * Otherwise there's a race between the caller and load(). */
+    args->file_name = palloc_get_page(0);
+    if (args->file_name == NULL) {
+        free(args);
+        free(ps);
+        return TID_ERROR;
+    }
+    strlcpy(args->file_name, file_name, PGSIZE);
+    args->ps = ps;
+
+    /* Register the child before starting it: start_process() may
+     * run (and even finish) before thread_create() returns below. */
+    list_push_back(&thread_current()->children, &ps->elem);
 
     /* Create a new thread to execute FILE_NAME. */
-    tid = thread_create(file_name, PRI_DEFAULT, start_process, fn_copy);
+    tid = thread_create(file_name, PRI_DEFAULT, start_process, args);
     if (tid == TID_ERROR) {
-        palloc_free_page(fn_copy);
+        list_remove(&ps->elem);
+        palloc_free_page(args->file_name);
+        free(args);
+        free(ps);
+    } else {
+        ps->tid = tid;
     }
     return tid;
 }
@@ -62,13 +119,16 @@ process_execute(const char *file_name)
 /* A thread function that loads a user process and starts it
  * running. */
 static void
-start_process(void *file_name_)
+start_process(void *args_)
 {
-    char *file_name = file_name_;
+    struct start_process_args *args = args_;
+    char *file_name = args->file_name;
     struct intr_frame if_;
     bool success;
 
     log(L_TRACE, "start_process()");
+
+    thread_current()->pstatus = args->ps;
 
     /* Initialize interrupt frame and load executable. */
     memset(&if_, 0, sizeof if_);
@@ -79,6 +139,7 @@ start_process(void *file_name_)
 
     /* If load failed, quit. */
     palloc_free_page(file_name);
+    free(args);
     if (!success) {
         thread_exit();
     }
@@ -98,14 +159,60 @@ start_process(void *file_name_)
  * exception), returns -1.  If TID is invalid or if it was not a
  * child of the calling process, or if process_wait() has already
  * been successfully called for the given TID, returns -1
- * immediately, without waiting.
- *
- * This function will be implemented in problem 2-2.  For now, it
- * does nothing. */
+ * immediately, without waiting. */
 int
-process_wait(tid_t child_tid UNUSED)
+process_wait(tid_t child_tid)
 {
-    return -1;
+    struct thread *cur = thread_current();
+    struct list_elem *e;
+    struct process_status *ps = NULL;
+    int exit_code;
+
+    for (e = list_begin(&cur->children); e != list_end(&cur->children);
+         e = list_next(e)) {
+        struct process_status *candidate =
+            list_entry(e, struct process_status, elem);
+
+        if (candidate->tid == child_tid) {
+            ps = candidate;
+            break;
+        }
+    }
+
+    if (ps == NULL) {
+        /* Not our child, an invalid tid, or we already waited for
+         * it (a successful wait removes it from `children'). */
+        return -1;
+    }
+
+    /* Remove PS from our list now, before blocking, so a second
+     * concurrent/recursive wait on the same tid can't find it. */
+    list_remove(&ps->elem);
+
+    sema_down(&ps->dead); /* Blocks until the child calls process_exit(). */
+    exit_code = ps->exit_code;
+
+    release_child_status(ps); /* Drop our (the parent's) reference. */
+
+    return exit_code;
+}
+
+/* Decrements PS's reference count and frees it once both the
+ * parent and child have dropped their reference (i.e. the parent
+ * has reaped it, or stopped caring, and the child has exited). */
+static void
+release_child_status(struct process_status *ps)
+{
+    bool should_free;
+
+    lock_acquire(&ps->ref_lock);
+    ps->ref_cnt--;
+    should_free = ps->ref_cnt == 0;
+    lock_release(&ps->ref_lock);
+
+    if (should_free) {
+        free(ps);
+    }
 }
 
 /* Free the current process's resources. */
@@ -118,6 +225,26 @@ process_exit(void)
     /* Close any files this process still had open; otherwise every
      * exiting process would leak its open `struct file's. */
     syscall_close_all_files();
+
+    /* We're done with any children we never waited for: drop our
+     * reference to each one's status record (freeing it if the
+     * child has already exited too). */
+    while (!list_empty(&cur->children)) {
+        struct process_status *child_ps =
+            list_entry(list_pop_front(&cur->children), struct process_status,
+                       elem);
+
+        release_child_status(child_ps);
+    }
+
+    /* Report our own exit status to our parent, if it's still
+     * around to care, then drop our reference to the shared
+     * record. */
+    if (cur->pstatus != NULL) {
+        cur->pstatus->exit_code = cur->exit_status;
+        sema_up(&cur->pstatus->dead);
+        release_child_status(cur->pstatus);
+    }
 
     /* Destroy the current process's page directory and switch back
      * to the kernel-only page directory. */

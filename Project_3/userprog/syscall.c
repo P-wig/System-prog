@@ -222,9 +222,11 @@ lookup_fd(int fd)
 static void
 sys_exit(int status)
 {
-    /* TODO (process.c): once process_wait() tracks per-child exit
-     * status, record STATUS there so the parent can retrieve it;
-     * for now the parent always sees process_wait()'s -1 stub. */
+    /* Record our exit code so process_exit() (called from
+     * thread_exit() below) can hand it to a parent blocked in
+     * process_wait(). */
+    thread_current()->exit_status = status;
+
     printf("%s: exit(%d)\n", thread_name(), status);
     thread_exit();
 }
@@ -238,7 +240,8 @@ sys_exec(const char *cmd_line)
     /* TODO (process.c): process_execute() doesn't yet wait for the
      * child to finish loading or report whether loading succeeded,
      * so a bad command line currently yields a tid whose process
-     * exits immediately rather than EXEC failing outright. */
+     * exits immediately (with process_wait() correctly reporting
+     * its exit code) rather than EXEC failing outright. */
     return process_execute(cmd_line);
 }
 
