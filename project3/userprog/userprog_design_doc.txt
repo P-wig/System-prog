@@ -57,9 +57,17 @@ struct start_process_args: bundles start process's args
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+* struct fd_entry: The mapping from the fd the user sees to the kernel
+  * int fd: The file descriptor
+  * struct file *file
+  * struct list_elem elem
+
+* static struct lock filesys_lock: Only one syscall can be using a file at a time
+
 >> B2: Describe how file descriptors are associated with open files.
 >> Are file descriptors unique within the entire OS or just within a
 >> single process?
+* sys_open opens files with filesys_open and takes the file return to create an fd_entry. They are thread local.
 
 ---- ALGORITHMS ----
 
