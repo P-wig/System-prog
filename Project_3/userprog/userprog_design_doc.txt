@@ -9,7 +9,7 @@
 >> Fill in the names and email addresses of your group members.
 
 Isaac Shepherd <is23423@utexas.edu>
-FirstName LastName <email@utexas.edu>
+Michael Kirl mkirl@my.utexas.edu
 
 ---- PRELIMINARIES ----
 
@@ -27,6 +27,15 @@ FirstName LastName <email@utexas.edu>
 >> A1: Copy here the declaration of each new or changed `struct' or
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
+
+* struct process_status: Keeps track of child processes status manages communication between child and parent.
+  * struct semaphore load_done: signals when load complete so parent can continue
+  * struct semaphore dead: signals when child exits so parent can continue
+  * bool load_result: after load_done signals, this informs parent what happened
+
+struct start_process_args: bundles start process's args
+
+
 
 ---- ALGORITHMS ----
 
@@ -116,6 +125,8 @@ the semester.
 
 >> In your opinion, was this assignment, or any one of the three problems
 >> in it, too easy or too hard?  Did it take too long or too little time?
+
+Great assignment, but the most difficult part was getting PintOS running. I know that we have VMs available for students but I couldn't figure out how to sign up for one. A quick setup would have made this easier. I tried emulation and that made feedback loops incredibly slow.
 
 >> Did you find that working on a particular part of the assignment gave
 >> you greater insight into some aspect of OS design?
