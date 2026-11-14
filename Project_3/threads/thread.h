@@ -95,6 +95,13 @@ struct thread {
     /* Owned by userprog/process.c. */
     uint32_t *pagedir; /* Page directory. */
 
+    /* This process's own executable file, kept open (and
+     * write-denied via file_deny_write()) for as long as the
+     * process is running; see "Denying Writes to Executables" in
+     * userprog/README.md. NULL until load() succeeds; closed by
+     * process_exit(). */
+    struct file *exec_file;
+
     /* This process's shared exit-status record (an opaque
      * struct process_status, defined in process.c), or NULL if
      * this thread has no parent tracking it (e.g. the first

@@ -37,6 +37,14 @@ struct process_status {
     tid_t tid;       /* Child's thread id, for matching in process_wait(). */
     int   exit_code; /* Set by the child in process_exit(). */
 
+    /* Set by the child (in start_process()) once it knows whether
+     * load() succeeded; `loaded' is posted right after, so
+     * process_execute() can make exec() report failure
+     * synchronously instead of returning a pid that's doomed to
+     * fail. */
+    bool             load_success;
+    struct semaphore loaded;
+
     int         ref_cnt; /* 2 while parent and child are both alive. */
     struct lock ref_lock; /* Protects ref_cnt. */
 
@@ -81,6 +89,8 @@ process_execute(const char *file_name)
         return TID_ERROR;
     }
     ps->exit_code = -1;
+    ps->load_success = false;
+    sema_init(&ps->loaded, 0);
     ps->ref_cnt = 2; /* One reference each for the parent and the child. */
     lock_init(&ps->ref_lock);
     sema_init(&ps->dead, 0);
@@ -128,6 +138,16 @@ process_execute(const char *file_name)
         free(ps);
     } else {
         ps->tid = tid;
+
+        /* exec() must not return until we know whether the
+         * executable actually loaded: block here until the child
+         * (or thread_create() having failed partway through) signals
+         * `loaded', then report failure as TID_ERROR rather than a
+         * pid that would just fail immediately and asynchronously. */
+        sema_down(&ps->loaded);
+        if (!ps->load_success) {
+            tid = TID_ERROR;
+        }
     }
     return tid;
 }
@@ -139,12 +159,13 @@ start_process(void *args_)
 {
     struct start_process_args *args = args_;
     char *file_name = args->file_name;
+    struct process_status *ps = args->ps;
     struct intr_frame if_;
     bool success;
 
     log(L_TRACE, "start_process()");
 
-    thread_current()->pstatus = args->ps;
+    thread_current()->pstatus = ps;
 
     /* Initialize interrupt frame and load executable. */
     memset(&if_, 0, sizeof if_);
@@ -152,6 +173,12 @@ start_process(void *args_)
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;
     success = load(file_name, &if_.eip, &if_.esp);
+
+    /* Tell process_execute() we're done attempting to load, and
+     * whether it worked, so it can make exec() report failure
+     * synchronously. */
+    ps->load_success = success;
+    sema_up(&ps->loaded);
 
     /* If load failed, quit. */
     palloc_free_page(file_name);
@@ -252,6 +279,17 @@ process_exit(void)
     /* Close any files this process still had open; otherwise every
      * exiting process would leak its open `struct file's. */
     syscall_close_all_files();
+
+    /* Close our own executable (opened and write-denied by load()
+     * on success), re-enabling writes to it.  Closing it before our
+     * own page directory/resources are torn down doesn't matter
+     * here since we're not reading from it again. */
+    if (cur->exec_file != NULL) {
+        syscall_filesys_lock_acquire();
+        file_close(cur->exec_file);
+        syscall_filesys_lock_release();
+        cur->exec_file = NULL;
+    }
 
     /* We're done with any children we never waited for: drop our
      * reference to each one's status record (freeing it if the
@@ -392,6 +430,7 @@ load(char *file_name, void(**eip) (void), void **esp)
     struct file *file = NULL;
     off_t file_ofs;
     bool success = false;
+    bool lock_held = false;
     int i;
     char *argv[MAX_ARGS];
     int argc = 0;
@@ -420,6 +459,14 @@ load(char *file_name, void(**eip) (void), void **esp)
         goto done;
     }
     process_activate();
+
+    /* Everything from here on touches the shared, non-reentrant
+     * filesystem code, same as every syscall; guard it with the
+     * same lock syscall.c's handlers use. Held until `done' below,
+     * which closes FILE on failure (or hands it off to T->exec_file
+     * on success). */
+    syscall_filesys_lock_acquire();
+    lock_held = true;
 
     /* Open executable file. */
     file = filesys_open(argv[0]);
@@ -509,7 +556,19 @@ load(char *file_name, void(**eip) (void), void **esp)
 
 done:
     /* We arrive here whether the load is successful or not. */
-    file_close(file);
+    if (success) {
+        /* Deny writes to our own executable for as long as we're
+         * running (see "Denying Writes to Executables" in
+         * userprog/README.md), and keep it open so that denial
+         * stays in effect; process_exit() closes it. */
+        file_deny_write(file);
+        t->exec_file = file;
+    } else {
+        file_close(file);
+    }
+    if (lock_held) {
+        syscall_filesys_lock_release();
+    }
     return success;
 }
 

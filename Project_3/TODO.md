@@ -2,14 +2,16 @@
 
 This Pintos tree ships with `threads/`, `devices/`, `lib/`, and `filesys/`
 already working — that's supporting code, not part of this assignment.
-Everything you need to implement lives in two modules, built together from
-the [vm/](vm) project directory (its [Make.vars](vm/Make.vars) pulls in
-`tests/userprog`, `tests/vm`, and `tests/filesys/base`).
+
+**Scope update:** it's been clarified that this assignment only covers
+**User Programs** (`userprog/`). The Virtual Memory module (`vm/`) is **not**
+required and is parked, unimplemented, at the bottom of this file for
+reference only — do not build it as part of this assignment.
 
 | Module | Directory | State |
 |---|---|---|
-| 1. User Programs | [userprog/](userprog) | Skeleton present, core logic stubbed out |
-| 2. Virtual Memory | [vm/](vm) | Empty — no `.c` files exist yet |
+| User Programs | [userprog/](userprog) | ✅ All in-scope requirements implemented, `make check` passes 75/75 |
+| ~~Virtual Memory~~ | ~~[vm/](vm)~~ | **Out of scope — do not implement.** Left unimplemented below for reference only. |
 
 ---
 
@@ -117,25 +119,63 @@ without pushing anything onto it.
 
 Verified: clean `make` rebuild with zero errors/warnings. `make check` went
 from "every test fails instantly" (page fault reading `argv[0]` before this
-TODO) to **95 passing**. The remaining 5 distinct failures are unrelated,
-pre-existing gaps, not regressions from this change:
-  - `exec-missing` — already-flagged limitation that `process_execute()`
-    doesn't report a child's load failure back to `exec()` synchronously.
-  - `rox-simple`, `rox-child`, `rox-multichild` — "deny writes to a running
-    executable" isn't implemented (no `file_deny_write()`/
-    `file_allow_write()` calls yet); a separate feature, not argument
-    passing.
-  - `syn-read` — a `tests/filesys/base` test whose child process fails to
-    open at exec time; looks like a test-harness/filesystem-size issue
-    unrelated to argument passing.
+TODO) to 95 passing, with 5 then-remaining failures — `exec-missing`,
+`rox-simple`, `rox-child`, `rox-multichild`, `syn-read` — tracked and
+resolved by TODO #5 below (they weren't argument-passing bugs).
 
 ### 4. Design document — [userprog_design_doc.txt](userprog/userprog_design_doc.txt)
-- [ ] Fill in the blank "EE 461S Project 2: User Programs" template once the
-      above is implemented.
+- [ ] Fill in the blank "EE 461S Project 2: User Programs" template. This is
+      the only remaining item for this module.
+
+### 5. Exec/load synchronization and write-protected executables — [process.c](userprog/process.c), [syscall.c](userprog/syscall.c) ✅ Done
+Found while re-reading [userprog/README.md](userprog/README.md) after the
+scope was narrowed to userprog-only: two requirements from the spec weren't
+implemented yet, and they were the root cause of the 5 remaining test
+failures noted above (not VM-related, so still squarely in scope):
+
+- **"the parent process cannot return from `exec` until it knows whether the
+  child process successfully loaded its executable"** (`exec-missing`
+  failure — `exec()` returned a positive pid instead of `-1` for a
+  nonexistent program). Fixed by adding `load_success`/`loaded` (a
+  semaphore) to `struct process_status`: `start_process()` now posts
+  `loaded` right after `load()` returns (success or failure), and
+  `process_execute()` blocks on it before returning, reporting `TID_ERROR`
+  if the load failed instead of handing back a doomed pid.
+- **"Denying Writes to Executables"** (Exercise 2.5 — `rox-simple`/
+  `rox-child`/`rox-multichild` failures, since a running executable's file
+  wasn't write-protected). Fixed: `load()` now calls `file_deny_write()` on
+  success and keeps the executable open for the process's whole lifetime in
+  a new `exec_file` field on `struct thread` (owned by process.c, same
+  pattern as `pagedir`), instead of closing it immediately; `process_exit()`
+  closes it (which also calls `file_allow_write()` internally — see
+  [filesys/file.c](filesys/file.c)'s `file_close()`).
+- **Un-synchronized filesystem access from `process_execute()`/`load()`**
+  (root cause of the `syn-read` failure, and an explicitly called-out
+  requirement: *"Don't forget that `process_execute()` also accesses
+  files"*). `load()` previously called `filesys_open()`/`file_read()`/etc.
+  with no locking at all, while every syscall handler already serialized on
+  `syscall.c`'s private `filesys_lock`. Exposed two thin wrapper functions,
+  `syscall_filesys_lock_acquire()`/`syscall_filesys_lock_release()`, from
+  [syscall.h](userprog/syscall.h) (keeping the actual lock object private to
+  syscall.c, same pattern as `syscall_close_all_files()`), and wrapped all of
+  `load()`'s file access in it, plus `process_exit()`'s close of
+  `exec_file`.
+
+Verified: clean `make` rebuild, zero errors/warnings. `make check` now
+reports **"All 75 tests passed."** — every test in
+`tests/userprog/Rubric.functionality`, `tests/userprog/Rubric.robustness`,
+and `tests/filesys/base/Rubric` (the only three rubrics with nonzero weight
+in [tests/userprog/Grading](tests/userprog/Grading); `tests/userprog/no-vm`
+is explicitly 0%, confirming it's not needed).
 
 ---
 
-## Module 2 — Virtual Memory (`vm/`)
+## Module 2 — Virtual Memory (`vm/`) — **OUT OF SCOPE, not required**
+
+> **This entire module is not part of this assignment** (clarified
+> 2026-11-13). It's left below, unimplemented, purely as reference in case
+> scope changes again later — do not act on anything in this section unless
+> told otherwise.
 
 The [vm/](vm) directory currently contains only `Makefile`, `Make.vars`,
 `README.md`, and the blank `vm_design_doc.txt` — **no implementation
@@ -213,11 +253,14 @@ TODO:
 
 ## Verifying progress
 
+Build and test from **`userprog/`** (not `vm/` — that module isn't part of
+this assignment, see above):
+
 ```bash
-cd $PINTOS/vm
+cd $PINTOS/userprog
 make
-make check          # runs tests/userprog, tests/vm, tests/filesys/base
+make check          # runs tests/userprog and tests/filesys/base
 ```
 
-All tests fail until the relevant TODOs above are addressed — see
+As of this writing, `make check` reports **"All 75 tests passed."** — see
 [USAGE.md](USAGE.md) for the full build/test/debug workflow.

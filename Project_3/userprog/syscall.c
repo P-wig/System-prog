@@ -468,3 +468,16 @@ syscall_close_all_files(void)
         free(fde);
     }
 }
+
+/* See the comment on these in syscall.h. */
+void
+syscall_filesys_lock_acquire(void)
+{
+    lock_acquire(&filesys_lock);
+}
+
+void
+syscall_filesys_lock_release(void)
+{
+    lock_release(&filesys_lock);
+}
