@@ -73,6 +73,14 @@ struct start_process_args: bundles start process's args
 
 >> B3: Describe your code for reading and writing user data from the
 >> kernel.
+* Its a multi step process to translate virtual to physical addresses. 
+
+The kernel can directly dereference pointers but before doing that we first validate with check_user_range to make sure the address is in user space and that it is actually mapped. 
+
+After validation we call pagedir_get_page and iterate through to find the page table entries, once the page is found we call pte_get_page with the offset which will return the address. Then the kernel can dereference it.
+
+Then we file read/write the returned buffer.
+ 
 
 >> B4: Suppose a system call causes a full page (4,096 bytes) of data
 >> to be copied from user space into the kernel.  What is the least
@@ -80,9 +88,13 @@ struct start_process_args: bundles start process's args
 >> (e.g. calls to pagedir_get_page()) that might result?  What about
 >> for a system call that only copies 2 bytes of data?  Is there room
 >> for improvement in these numbers, and how much?
+>>
+* The least and greatest possible is 2 checks, we could just do one validation check before starting the copy operation.
 
 >> B5: Briefly describe your implementation of the "wait" system call
 >> and how it interacts with process termination.
+>>
+When a process is executed process_status creates a process status which has exit code, semaphores, and other meta data which is populated by the child before signaling the dead semaphore. process_wait scans children for matching child on that semaphore until exit, and returns exit.
 
 >> B6: Any access to user program memory at a user-specified address
 >> can fail due to a bad pointer value.  Such accesses must cause the
@@ -139,6 +151,8 @@ Great assignment, but the most difficult part was getting PintOS running. I know
 
 >> Did you find that working on a particular part of the assignment gave
 >> you greater insight into some aspect of OS design?
+>>
+Actually implementing the user fd to kernel address
 
 >> Is there some particular fact or hint we should give students in
 >> future semesters to help them solve the problems?  Conversely, did you
