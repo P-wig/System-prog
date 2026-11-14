@@ -8,7 +8,7 @@
 
 >> Fill in the names and email addresses of your group members.
 
-Isaac Shepherd <is23423@utexas.edu>
+Isaac Shepherd is23423@eid.utexas.edu
 Michael Kirl mkirl@my.utexas.edu
 
 ---- PRELIMINARIES ----
