@@ -1,0 +1,6 @@
+--target=i386-unknown-none-elf
+-std=gnu17
+-ffreestanding
+-nostdinc
+-I.
+-Ilib

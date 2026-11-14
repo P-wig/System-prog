@@ -1,0 +1,27 @@
+# Editor settings for the userprog project. Makefiles still control real builds.
+# compile_flags.txt anchors relative include paths at the Pintos source root.
+If:
+  PathExclude:
+    - examples/.*
+    - lib/user/.*
+    - tests/(userprog|filesys|vm)/.*
+    - tests/lib\.[ch]
+    - utils/.*
+CompileFlags:
+  Add: [-Ilib/kernel, -DUSERPROG, -DFILESYS]
+---
+# User programs use a different stdio.h and syscall interface than the kernel.
+If:
+  PathMatch:
+    - examples/.*
+    - lib/user/.*
+    - tests/(userprog|filesys|vm)/.*
+    - tests/lib\.[ch]
+CompileFlags:
+  Add: [-Ilib/user]
+---
+# Host-side utilities are normal programs, not freestanding Pintos programs.
+If:
+  PathMatch: utils/.*
+CompileFlags:
+  Remove: ['--target=*', -ffreestanding, -nostdinc, -I]

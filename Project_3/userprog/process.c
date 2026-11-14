@@ -41,7 +41,9 @@ struct process_status {
     struct lock ref_lock; /* Protects ref_cnt. */
 
     struct semaphore dead; /* Posted by the child when it exits. */
+	  struct semaphore load_done; /* Once done signal to the parent */
     struct list_elem elem; /* Element in the parent's `children' list. */
+	  bool load_result;
 };
 
 /* Bundles the arguments start_process() needs; process_execute()
@@ -82,8 +84,10 @@ process_execute(const char *file_name)
     }
     ps->exit_code = -1;
     ps->ref_cnt = 2; /* One reference each for the parent and the child. */
+	  ps->load_result = false;
     lock_init(&ps->ref_lock);
     sema_init(&ps->dead, 0);
+	  sema_init(&ps->load_done, 0);
 
     args = malloc(sizeof *args);
     if (args == NULL) {
@@ -128,6 +132,12 @@ process_execute(const char *file_name)
         free(ps);
     } else {
         ps->tid = tid;
+		    sema_down(&ps->load_done);
+        if(ps->load_result == false) {
+            list_remove(&ps->elem);
+			      release_child_status(ps);
+			      return TID_ERROR;
+		    }
     }
     return tid;
 }
@@ -152,6 +162,8 @@ start_process(void *args_)
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;
     success = load(file_name, &if_.eip, &if_.esp);
+	  args->ps->load_result = success;
+	  sema_up(&args->ps->load_done);
 
     /* If load failed, quit. */
     palloc_free_page(file_name);
