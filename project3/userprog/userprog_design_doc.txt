@@ -35,17 +35,18 @@ Michael Kirl mkirl@my.utexas.edu
 
 struct start_process_args: bundles start process's args
 
-
-
 ---- ALGORITHMS ----
 
 >> A2: Briefly describe how you implemented argument parsing.  How do
 >> you arrange for the elements of argv[] to be in the right order?
 >> How do you avoid overflowing the stack page?
 
+* tokenizing the command line arguments and incrementing argc not to exceed MAX_ARGS. The parsing method keeps the arg order, and then we use reverse order for stack placement. If the command line is larger than the PGSIZE we alert the user, clean up, and return false
+
 ---- RATIONALE ----
 
 >> A3: Why does Pintos implement strtok_r() but not strtok()?
+* strtok relies on a shared static pointer, strtok_r has its own pointer to keep track of where it is.
 
                              SYSTEM CALLS
                              ============
