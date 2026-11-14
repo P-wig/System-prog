@@ -110,6 +110,14 @@ When a process is executed process_status creates a process status which has exi
 >> paragraphs, describe the strategy or strategies you adopted for
 >> managing these issues.  Give an example.
 
+* Similar to work in yashd if you aren't organized in how you are processing requests you'll have duplicate code, and difficult to follow logic. So we took a phased approach we start with checks/guard clauses -> work -> process success or failures -> communicate to user what happened.
+
+Before any work is done we have guard clauses that will check if a user pointer is even accessible (access_ok). Also rather than interacting directly with memory we use functions to copy_from_user and copy_to_user to manage communication back and forth to user space. These copies either copy everything or fail.
+
+Rather than having a go like error handling structure we use go to clean up label pattern. This prevents having if (error) free resources etc littered throughout the code, it makes it easier to track that every resource allocation is paired with a cleanup function.
+
+
+
 ---- SYNCHRONIZATION ----
 
 >> B7: The "exec" system call returns -1 if loading the new executable
@@ -117,12 +125,16 @@ When a process is executed process_status creates a process status which has exi
 >> loading.  How does your code ensure this?  How is the load
 >> success/failure status passed back to the thread that calls "exec"?
 
+We have a shared struct process_status between the parent and child. Inside process_status is a semaphore that is used to signal if load was called and then a boolean that tracks if it was success or failure. This prevents a race condition so that the parent doesnt try to read if it was successful or not before the load is complete.
+
 >> B8: Consider parent process P with child process C.  How do you
 >> ensure proper synchronization and avoid race conditions when P
 >> calls wait(C) before C exits?  After C exits?  How do you ensure
 >> that all resources are freed in each case?  How about when P
 >> terminates without waiting, before C exits?  After C exits?  Are
 >> there any special cases?
+>>
+* We have a 
 
 ---- RATIONALE ----
 
