@@ -67,19 +67,23 @@ struct start_process_args: bundles start process's args
 >> B2: Describe how file descriptors are associated with open files.
 >> Are file descriptors unique within the entire OS or just within a
 >> single process?
+* FDs are found via lookup_fd
+* FDs are not globally unique but are unique within the process.
 * sys_open opens files with filesys_open and takes the file return to create an fd_entry. They are thread local.
+* sys_close removes fd_entry from the list
 
 ---- ALGORITHMS ----
 
 >> B3: Describe your code for reading and writing user data from the
 >> kernel.
-* Its a multi step process to translate virtual to physical addresses. 
 
-The kernel can directly dereference pointers but before doing that we first validate with check_user_range to make sure the address is in user space and that it is actually mapped. 
+The kernel can directly dereference pointers but before doing that we first validate with check_user_range to make sure the address is in user space and that it is actually mapped. Within check_user_range,  pagedir_get_page() is called to validate that each page is mapped. 
 
-After validation we call pagedir_get_page and iterate through to find the page table entries, once the page is found we call pte_get_page with the offset which will return the address. Then the kernel can dereference it.
+arg_word validates syscall arguments from the user before dereference
+check_user_string validates at page boundaries for NULL terminated strings
 
-Then we file read/write the returned buffer.
+On any failure we call sys_exit terminating the process
+
  
 
 >> B4: Suppose a system call causes a full page (4,096 bytes) of data
@@ -89,7 +93,11 @@ Then we file read/write the returned buffer.
 >> for a system call that only copies 2 bytes of data?  Is there room
 >> for improvement in these numbers, and how much?
 >>
-* The least and greatest possible is 2 checks, we could just do one validation check before starting the copy operation.
+* For a 4096 byte copy if its aligned perfectly to page boundary, 1 pagedir_get_page calls. If it offset at all there will be two pages calls.
+
+* For a 2-byte copy it will be the same if its on the boundary but it will happen much less than the 4096.
+
+* no room for improvement 
 
 >> B5: Briefly describe your implementation of the "wait" system call
 >> and how it interacts with process termination.
@@ -110,12 +118,11 @@ When a process is executed process_status creates a process status which has exi
 >> paragraphs, describe the strategy or strategies you adopted for
 >> managing these issues.  Give an example.
 
-* Similar to work in yashd if you aren't organized in how you are processing requests you'll have duplicate code, and difficult to follow logic. So we took a phased approach we start with checks/guard clauses -> work -> process success or failures -> communicate to user what happened.
+* Before any work is started we validate and if we encounter any errors we terminate immediately.
 
-Before any work is done we have guard clauses that will check if a user pointer is even accessible (access_ok). Also rather than interacting directly with memory we use functions to copy_from_user and copy_to_user to manage communication back and forth to user space. These copies either copy everything or fail.
+* Every user supplied pointer is validated using check_user_range before the kernel dereferences it. This makes sure that we are in user space and that it is mapped in the page directory (pagedir_get_page). arg_word does the same validation to syscall arguments on the user stack. We also have guard clauses such as check_user_range whcih just throws out possible overflows and size == 0, and check_user_string, which validates strings at page boundaries rather than per byte. 
 
-Rather than having a go like error handling structure we use go to clean up label pattern. This prevents having if (error) free resources etc littered throughout the code, it makes it easier to track that every resource allocation is paired with a cleanup function.
-
+* If we encounter any failure we call sys_exit(-1) and terminate the process. For syscalls that require resources we only allocate after validation.
 
 
 ---- SYNCHRONIZATION ----
@@ -124,8 +131,8 @@ Rather than having a go like error handling structure we use go to clean up labe
 >> fails, so it cannot return before the new executable has completed
 >> loading.  How does your code ensure this?  How is the load
 >> success/failure status passed back to the thread that calls "exec"?
+* success and failure is tracked in the struct process_status on the member bool load_success. This struct is shared, and we block until that is complete. The child thread sets ps->load_success and then calls sema_up and process_execute calls sema_down which blocks. After the parent wakes up it will check ps->load_success and if it is false it will replace the childs TID with TID_ERROR and returns that. The struct also contains a reference count keeps the process alive to prevent use after free errors or being garbage collected.
 
-We have a shared struct process_status between the parent and child. Inside process_status is a semaphore that is used to signal if load was called and then a boolean that tracks if it was success or failure. This prevents a race condition so that the parent doesnt try to read if it was successful or not before the load is complete.
 
 >> B8: Consider parent process P with child process C.  How do you
 >> ensure proper synchronization and avoid race conditions when P
@@ -134,18 +141,35 @@ We have a shared struct process_status between the parent and child. Inside proc
 >> terminates without waiting, before C exits?  After C exits?  Are
 >> there any special cases?
 >>
-* We have a 
+* When the parent calls wait(c) before C exits the process_wait() calls sema_down(&ps->dead) which blocks. The child once complete calls sema_up(&ps->dead) when it exits on process exit. 
+
+* After C exits, the parents sema_down is unblocked, which then the parent will evaluate the exit code, afterwards the process_status() is cleaned up in release_child_status().
+
+* When parent terminates without waiting the process_exit() iterates through the children list and calls release_child_status on each. The process_status still has a reference count so it will not be cleaned up.
+
+* After C exits (if the parent already exit) that would be an orphan process, the parents process_exit() would have already reduced the ref_cnt when the child process calls process exit() it would still call sema_up(), though nothing would track it and then call release_child_status reducing the ref_cnt to 0 and the resources would be freed.
+
+* special cases, calling wait twice for the same child, the second time returns a -1 because list_remove in the first process_wait() removed it from the childrens list.
+
+* bad TIDs or TID collision with siblings, 
+
+* Parent exits before calling wait(), this would cause the children to become orphans, holding onto resources such as process_status until the process exits.
+
 
 ---- RATIONALE ----
 
 >> B9: Why did you choose to implement access to user memory from the
 >> kernel in the way that you did?
+* simplicity, every function that uses a user pointer first checks if its in userspace then validates the mapping with a page dir lookup, then we dereference it directly. Its kind of like lazy loading or just in time, so we dont need a buffer or any malloc calls. If any parts fails, we terminate the process.
 
 >> B10: What advantages or disadvantages can you see to your design
 >> for file descriptors?
+>>
+* Simplicity, again is an advantage, every process gets an allocation, and a clean up. Disadvantage is the basic for loop with O(N) look up speed for file descriptors. We also do not reuse file descriptors so at some point we are going to run out.
 
 >> B11: The default tid_t to pid_t mapping is the identity mapping.
 >> If you changed it, what advantages are there to your approach?
+* We could have process groups like in yash, that way we could send signals to entire groups of processes, which would allow us to have job control, or also allow children to look up their parent processes.
 
                            SURVEY QUESTIONS
                            ================
