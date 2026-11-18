@@ -1,266 +1,302 @@
-# Project 3 TODOs
+# Project 4 TODOs
 
-This Pintos tree ships with `threads/`, `devices/`, `lib/`, and `filesys/`
-already working — that's supporting code, not part of this assignment.
+This builds on the same codebase as Project 3 (`project3/`), not a fresh
+checkout. Project 3's `userprog` work (syscalls, argument passing,
+wait/exec, deny-write-to-executables) stays as-is and must keep passing —
+see [TODO.md](TODO.md) and [REVIEW.md](REVIEW.md) for that history.
 
-**Scope update:** it's been clarified that this assignment only covers
-**User Programs** (`userprog/`). The Virtual Memory module (`vm/`) is **not**
-required and is parked, unimplemented, at the bottom of this file for
-reference only — do not build it as part of this assignment.
+**Scope confirmed:** this project is **threads + filesys + userprog only,
+no `vm/`**. [filesys/Make.vars](filesys/Make.vars) defaults to exactly that
+("no-vm") track — `vm` and `-DVM` are present only as commented-out lines
+for an optional 10% extra-credit path, and none of the raw requirements
+(indexed files, path-aware syscalls, new directory syscalls, finer
+synchronization) touch paging/swap/mmap. Don't implement `vm/` unless that
+decision changes.
 
-| Module | Directory | State |
+| Area | Directory | State |
 |---|---|---|
-| User Programs | [userprog/](userprog) | ✅ All in-scope requirements implemented, `make check` passes 75/75 |
-| ~~Virtual Memory~~ | ~~[vm/](vm)~~ | **Out of scope — do not implement.** Left unimplemented below for reference only. |
+| Indexed/extensible files | [filesys/inode.c](filesys/inode.c) | Single-extent only — needs redesign |
+| Subdirectories | [filesys/directory.c](filesys/directory.c), [filesys/filesys.c](filesys/filesys.c) | Flat root-only namespace — no path resolution at all |
+| New directory syscalls | [userprog/syscall.c](userprog/syscall.c) | Numbers/prototypes already exist; unimplemented (fall through to `sys_exit(-1)`) |
+| Per-process cwd | [threads/thread.h](threads/thread.h) | Field doesn't exist yet |
+| Synchronization | [userprog/syscall.c](userprog/syscall.c)'s `filesys_lock` | One global lock for the whole filesystem — too coarse for this project |
+| `extract`/`append` | [filesys/fsutil.c](filesys/fsutil.c) | Currently **skips** directory entries entirely |
 
 ---
 
-## Module 1 — User Programs (`userprog/`)
+## 1. Indexed and Extensible Files — [filesys/inode.c](filesys/inode.c), [filesys/inode.h](filesys/inode.h)
 
-### 1. System call dispatch — [syscall.c](userprog/syscall.c) ✅ Done
-`syscall_handler()` was a placeholder that just printed `"system call!\n"`
-and exited. It's now implemented:
-
-- [x] Reads the syscall number and arguments off `f->esp`, validating every
-      user-provided pointer/string/buffer first (`check_user_range()` /
-      `check_user_string()`); invalid pointers terminate the process via
-      `sys_exit(-1)` instead of crashing the kernel.
-- [x] Dispatches all of `SYS_HALT`, `SYS_EXIT`, `SYS_EXEC`, `SYS_WAIT`,
-      `SYS_CREATE`, `SYS_REMOVE`, `SYS_OPEN`, `SYS_FILESIZE`, `SYS_READ`,
-      `SYS_WRITE`, `SYS_SEEK`, `SYS_TELL`, `SYS_CLOSE`. `SYS_MMAP`/
-      `SYS_MUNMAP` currently just reject with `sys_exit(-1)` — real support
-      is deferred to the VM module below.
-- [x] Added per-process file descriptor tracking: `struct thread` now has
-      an `fd_list`/`fd_next` (see [thread.h](threads/thread.h)), populated
-      by `sys_open()` and walked by `lookup_fd()`. `process_exit()` calls
-      the new `syscall_close_all_files()` so a dying process doesn't leak
-      open files.
-- [x] Added a single global `filesys_lock` in syscall.c guarding every
-      `filesys_*()`/`file_*()` call, since the filesystem isn't reentrant.
-
-Known limitations, to be resolved by later TODO items in this file:
-- `sys_exit()`'s status isn't yet delivered to a waiting parent — that
-  lands with TODO #2 below (`process_wait()`).
-- `sys_exec()` doesn't yet block until the child finishes loading or learn
-  whether loading failed — same TODO #2.
-- End-to-end testing (`make check`) still fails: `threads/init.c`'s
-  `run_task()` does `process_wait(process_execute(task))`, and since
-  `process_wait()` is still a stub returning `-1` immediately, the kernel
-  powers off before the test process ever gets a CPU tick (confirmed via
-  `Thread: ... 0 user ticks` in test output). This is expected until TODO
-  #2 is implemented, not a syscall.c bug — verified by a clean `make`
-  rebuild of `userprog/` with zero errors/warnings.
-
-### 2. Process exit status — [process.c](userprog/process.c) ✅ Done
-`process_wait()` was a stub that returned `-1` immediately without waiting.
-It's now implemented:
-
-- [x] Added a reference-counted `struct process_status` (private to
-      process.c), created in `process_execute()` and shared between parent
-      and child: the parent holds it in a new `children` list on
-      `struct thread`, the child holds it via a new `pstatus` pointer (see
-      [thread.h](threads/thread.h)). Either side may exit first, so each
-      side drops its own reference via `release_child_status()`, and
-      whichever drops the last one frees it.
-- [x] `process_wait()` looks the child up by tid in the caller's
-      `children` list (returning `-1` immediately if not found — covers
-      invalid tid, non-child tid, and "already waited" since a successful
-      wait removes the entry), then blocks on a semaphore
-      (`ps->dead`) until the child's `process_exit()` posts it.
-- [x] `process_exit()` now posts that semaphore and copies the process's
-      `exit_status` (a new field on `struct thread`, defaulting to `-1` —
-      the "killed by the kernel" case) into the shared record. It also
-      walks its own `children` list releasing any it never waited for, so
-      parent-exits-first doesn't leak.
-- [x] [syscall.c](userprog/syscall.c)'s `sys_exit()` now sets
-      `thread_current()->exit_status` before calling `thread_exit()`, wiring
-      the real exit code through to a waiting parent. The
-      `"%s: exit(%d)\n"` message was already in place from TODO #1.
-
-Verified: clean `make` rebuild of `userprog/` with zero errors/warnings.
-Before this change, every test showed `0 user ticks` in its log (the kernel
-powered off before the test process ever ran, because `process_wait()`
-returned instantly). After this change, e.g. `wait-simple`'s log shows
-`21 user ticks` and the child process actually executing — confirming
-`process_wait()` now genuinely blocks on the child instead of returning
-immediately.
-
-Still expected to fail `make check`: every userprog test's `main()` reads
-`argv[0]` (see [tests/main.c](tests/main.c)), and since argument passing
-(TODO #3 below) isn't implemented yet, the initial stack has no `argc`/
-`argv` on it, so tests now fault trying to read it (`Page fault ... rights
-violation error reading page`). That's TODO #3's job, not a regression
-here.
-
-### 3. Argument passing — [process.c](userprog/process.c) ✅ Done
-`load()` used to pass the raw command line straight to `filesys_open()`, and
-`setup_stack()` only zero-mapped a page and pointed `esp` at `PHYS_BASE`
-without pushing anything onto it.
-
-- [x] `load()` now tokenizes the command line with `strtok_r()` into an
-      `argv[]`/`argc` (capped at `MAX_ARGS` = 32), opens only `argv[0]` via
-      `filesys_open()`, and passes `argv`/`argc` through to `setup_stack()`.
-- [x] `setup_stack()` builds the full initial stack: argument strings
-      (highest address = last arg, matching the Pintos docs' example),
-      4-byte alignment padding, a null `argv[argc]` sentinel, the `argv[]`
-      pointer array, `argv`, `argc`, and a fake return address — each push
-      bounds-checked against the single stack page (fails cleanly instead
-      of overflowing if the command line is too long).
-- [x] `process_execute()` now also extracts just the program name (before
-      the first space) to use as the new thread's name, since the whole
-      command line was getting truncated into `thread_name()` and breaking
-      the `"%s: exit(%d)\n"` message tests check for.
-- [x] Along the way, found and fixed a gap from TODO #2: the exit message
-      was only printed by `sys_exit()`, so processes killed by the kernel
-      (bad pointer/bad jump tests) never printed `"name: exit(-1)"`. Moved
-      that `printf()` into `process_exit()` itself (gated on
-      `pagedir != NULL`) so it fires for both voluntary `exit()` calls and
-      kernel-forced kills.
-
-Verified: clean `make` rebuild with zero errors/warnings. `make check` went
-from "every test fails instantly" (page fault reading `argv[0]` before this
-TODO) to 95 passing, with 5 then-remaining failures — `exec-missing`,
-`rox-simple`, `rox-child`, `rox-multichild`, `syn-read` — tracked and
-resolved by TODO #5 below (they weren't argument-passing bugs).
-
-### 4. Design document — [userprog_design_doc.txt](userprog/userprog_design_doc.txt)
-- [ ] Fill in the blank "EE 461S Project 2: User Programs" template. This is
-      the only remaining item for this module.
-
-### 5. Exec/load synchronization and write-protected executables — [process.c](userprog/process.c), [syscall.c](userprog/syscall.c) ✅ Done
-Found while re-reading [userprog/README.md](userprog/README.md) after the
-scope was narrowed to userprog-only: two requirements from the spec weren't
-implemented yet, and they were the root cause of the 5 remaining test
-failures noted above (not VM-related, so still squarely in scope):
-
-- **"the parent process cannot return from `exec` until it knows whether the
-  child process successfully loaded its executable"** (`exec-missing`
-  failure — `exec()` returned a positive pid instead of `-1` for a
-  nonexistent program). Fixed by adding `load_success`/`loaded` (a
-  semaphore) to `struct process_status`: `start_process()` now posts
-  `loaded` right after `load()` returns (success or failure), and
-  `process_execute()` blocks on it before returning, reporting `TID_ERROR`
-  if the load failed instead of handing back a doomed pid.
-- **"Denying Writes to Executables"** (Exercise 2.5 — `rox-simple`/
-  `rox-child`/`rox-multichild` failures, since a running executable's file
-  wasn't write-protected). Fixed: `load()` now calls `file_deny_write()` on
-  success and keeps the executable open for the process's whole lifetime in
-  a new `exec_file` field on `struct thread` (owned by process.c, same
-  pattern as `pagedir`), instead of closing it immediately; `process_exit()`
-  closes it (which also calls `file_allow_write()` internally — see
-  [filesys/file.c](filesys/file.c)'s `file_close()`).
-- **Un-synchronized filesystem access from `process_execute()`/`load()`**
-  (root cause of the `syn-read` failure, and an explicitly called-out
-  requirement: *"Don't forget that `process_execute()` also accesses
-  files"*). `load()` previously called `filesys_open()`/`file_read()`/etc.
-  with no locking at all, while every syscall handler already serialized on
-  `syscall.c`'s private `filesys_lock`. Exposed two thin wrapper functions,
-  `syscall_filesys_lock_acquire()`/`syscall_filesys_lock_release()`, from
-  [syscall.h](userprog/syscall.h) (keeping the actual lock object private to
-  syscall.c, same pattern as `syscall_close_all_files()`), and wrapped all of
-  `load()`'s file access in it, plus `process_exit()`'s close of
-  `exec_file`.
-
-Verified: clean `make` rebuild, zero errors/warnings. `make check` now
-reports **"All 75 tests passed."** — every test in
-`tests/userprog/Rubric.functionality`, `tests/userprog/Rubric.robustness`,
-and `tests/filesys/base/Rubric` (the only three rubrics with nonzero weight
-in [tests/userprog/Grading](tests/userprog/Grading); `tests/userprog/no-vm`
-is explicitly 0%, confirming it's not needed).
-
----
-
-## Module 2 — Virtual Memory (`vm/`) — **OUT OF SCOPE, not required**
-
-> **This entire module is not part of this assignment** (clarified
-> 2026-11-13). It's left below, unimplemented, purely as reference in case
-> scope changes again later — do not act on anything in this section unless
-> told otherwise.
-
-The [vm/](vm) directory currently contains only `Makefile`, `Make.vars`,
-`README.md`, and the blank `vm_design_doc.txt` — **no implementation
-exists yet**. You are expected to design and create it from scratch
-(typically a supplemental page table, a frame table, and swap support — e.g.
-`vm/page.c`, `vm/frame.c`, `vm/swap.c` plus headers, though exact naming is
-up to you).
-
-### 1. Register your new sources — [Makefile.build](Makefile.build)
-```make
-#vm_SRC = vm/file.c			# Some file.
-```
-TODO:
-- [ ] Uncomment `vm_SRC` and list every `.c` file you add under `vm/`, or
-      they will silently never be compiled (see the warning in
-      [USAGE.md](USAGE.md)).
-
-### 2. Page-fault handler — [exception.c](userprog/exception.c)
-`page_fault()` currently just prints a diagnostic and kills the process:
+`struct inode_disk` is a single extent today:
 
 ```c
-/* To implement virtual memory, delete the rest of the function
- * body, and replace it with code that brings in the page to
- * which fault_addr refers. */
-printf("Page fault at %p: %s error %s page in %s context.\n", ...);
-kill(f);
+struct inode_disk {
+    block_sector_t start;       /* First data sector. */
+    off_t          length;      /* File size in bytes. */
+    unsigned       magic;       /* Magic number. */
+    uint32_t       unused[125]; /* Not used. */
+};
 ```
 
-TODO:
-- [ ] Replace the body: look up `fault_addr` in the faulting process's
-      supplemental page table, and either load the page on demand (from the
-      executable, swap, or a zero page) or terminate the process if the
-      access is genuinely invalid.
-- [ ] Distinguish stack growth (an access just below the current stack
-      pointer) from an invalid access.
+`inode_create()` allocates that one contiguous run up front
+(`free_map_allocate(sectors, &disk_inode->start)`), and `inode_write_at()`
+still has the old limiting comment: *"Normally a write at end of file
+would extend the inode, but growth is not yet implemented."* `byte_to_sector()`
+also assumes the single-extent layout (`inode->data.start + pos /
+BLOCK_SECTOR_SIZE`).
 
-### 3. Supplemental page table
 TODO:
-- [ ] Design a per-process data structure (keyed on user virtual address)
-      recording how to (re)populate each page: from a file (and at what
-      offset), from swap, or zeroed.
-- [ ] Hook it into process/thread creation and teardown
-      ([process.c](userprog/process.c), `process_exit()`).
+- [ ] Replace `inode_disk`'s layout with an indexed scheme — direct,
+      indirect, and doubly-indirect block pointers are the standard choice
+      (any scheme is acceptable as long as you justify it in the design doc
+      and it doesn't suffer external fragmentation). It must fit in exactly
+      `BLOCK_SECTOR_SIZE` (512 bytes) — `inode_create()` already asserts
+      this (`ASSERT(sizeof *disk_inode == BLOCK_SECTOR_SIZE)`), so the
+      pointer counts need to be sized to match.
+- [ ] Support files as large as the 8 MB partition allows (minus metadata)
+      — per [filesys/README.md](filesys/README.md), this requires at least
+      one doubly-indirect block.
+- [ ] Rewrite `byte_to_sector()` to walk the new index structure instead of
+      a single `start + offset`.
+- [ ] Implement real file growth: `inode_create()` should be able to start
+      a file at length 0, and `inode_write_at()` must allocate new sectors
+      on demand when a write extends past the current length — zero-filling
+      any gap between the old EOF and the write position. Sparse
+      (don't-allocate-until-written) or eager-zero allocation are both
+      acceptable; pick one and say so in the design doc.
+- [ ] Remove the file-growth caveat comment in `inode_write_at()` once this
+      works.
+- [ ] Allow the **root directory** to grow past its original fixed 16-entry
+      allocation (`do_format()` in [filesys/filesys.c](filesys/filesys.c)
+      currently calls `dir_create(ROOT_DIR_SECTOR, 16)`) — directories are
+      just files, so this should fall out of file growth working correctly.
+- [ ] A read starting past EOF must return 0 bytes (already true as long as
+      `inode_length()` is accurate); a seek past EOF must not itself extend
+      the file (only a later write does).
 
-### 4. Frame table and eviction
+---
+
+## 2. Subdirectories / Path Resolution — [filesys/directory.c](filesys/directory.c), [filesys/filesys.c](filesys/filesys.c), [threads/thread.h](threads/thread.h)
+
+Right now there is no hierarchy at all. `filesys_create()`/`filesys_open()`/
+`filesys_remove()` in [filesys/filesys.c](filesys/filesys.c) **always**
+call `dir_open_root()` and look the name up there — a name containing `/`
+or a relative path has no meaning today. `struct dir_entry` and
+`struct inode_disk` have no way to say "this entry/inode is a directory."
+There are no `.`/`..` entries anywhere.
+
 TODO:
-- [ ] Track which physical frames are in use and by whom (replace/augment
-      `threads/palloc.c` usage for user pages).
-- [ ] Implement an eviction policy to free a frame when none are available,
-      writing the evicted page to swap (or back to its file) as needed.
-- [ ] Add synchronization so concurrent faults/evictions can't race.
+- [ ] Mark directory inodes as directories — add an `is_dir`-style flag
+      somewhere reachable from an inode (e.g. in `struct inode_disk`, or
+      tracked alongside it), so code can tell a file inode from a directory
+      inode.
+- [ ] When a directory is created, write `.` (self) and `..` (parent)
+      entries into it pointing at the right inode sectors — `dir_create()`/
+      `dir_add()` in [filesys/directory.c](filesys/directory.c) don't do
+      this today.
+- [ ] Write a path-resolution routine (new code, most naturally in
+      [filesys/filesys.c](filesys/filesys.c)) that:
+      - Treats a leading `/` as absolute (start from the root directory)
+        and anything else as relative to the **calling process's cwd**.
+      - Splits on `/`, treating `a//b` the same as `a/b` (collapse repeated
+        slashes).
+      - Handles `.` and `..` specially, including the FAQ's rule that the
+        root's `..` is the root itself (so `/../x` == `/x`).
+      - Returns the containing directory and final component name
+        separately, since `mkdir("/a/b/c")` needs `/a/b` to already exist
+        and `/a/b/c` to not.
+- [ ] Route `filesys_create()`, `filesys_open()`, and `filesys_remove()`
+      through that resolver instead of `dir_open_root()`.
+- [ ] Add a `filesys_mkdir()`-equivalent (or extend `dir_create()`'s
+      caller) that resolves the parent, allocates a new inode sector,
+      calls `dir_create()`, writes `.`/`..`, and `dir_add()`s it into the
+      parent — failing if the parent path doesn't fully exist or the name
+      already exists.
+- [ ] Add a per-process current working directory: a `struct dir *cwd`
+      (or equivalent) field on `struct thread` in
+      [threads/thread.h](threads/thread.h), next to the `pstatus`/`fd_list`
+      fields already added for Project 3. Initialize the first process's
+      cwd to the root in `process_execute()`/`load()`
+      ([userprog/process.c](userprog/process.c)); `exec()` must have the
+      child inherit the parent's cwd (reopen the same directory, not
+      re-resolve a path) rather than resetting to root. Close it in
+      `process_exit()`.
+- [ ] Update `dir_remove()`/`filesys_remove()` semantics: a directory can
+      only be removed if it's empty (nothing besides `.`/`..`), and the
+      root can never be removed. Decide — and document in the design
+      doc — whether removing a directory that's open or is some process's
+      cwd is allowed; if you allow it, opening/creating inside a removed
+      directory must then fail. `dir-rm-cwd`, `dir-rm-parent`, and
+      `dir-rm-root` specifically probe this behavior.
+- [ ] Decide whether to keep `NAME_MAX` (14, in
+      [filesys/directory.h](filesys/directory.h)) for individual path
+      components or raise it; either way, full path names must be allowed
+      to be much longer than 14 characters, since they're resolved
+      component-by-component, not as one name.
 
-### 5. Swap support
+---
+
+## 3. New Directory Syscalls — [userprog/syscall.c](userprog/syscall.c)
+
+The syscall numbers and user-facing prototypes already exist from Project
+3's setup — [lib/syscall-nr.h](lib/syscall-nr.h) has `SYS_CHDIR`,
+`SYS_MKDIR`, `SYS_READDIR`, `SYS_ISDIR`, `SYS_INUMBER`, and
+[lib/user/syscall.h](lib/user/syscall.h) already declares `chdir()`,
+`mkdir()`, `readdir()`, `isdir()`, `inumber()` (plus `READDIR_MAX_LEN`).
+`syscall_handler()`'s `switch` just doesn't have cases for them yet, so
+they currently fall through to `default: sys_exit(-1);`.
+
 TODO:
-- [ ] Create a swap table (block device abstraction already exists in
-      [devices/block.c](devices/block.c)) to track free/used swap slots.
-- [ ] Implement swap-in (on page fault) and swap-out (on eviction).
-- [ ] Remember to pass `--swap-size=4` (or similar) when running tests by
-      hand — see [USAGE.md](USAGE.md).
+- [ ] Add `sys_chdir(const char *dir)`: resolve `dir` (absolute or
+      relative) to a directory, swap it in for the calling thread's cwd on
+      success. Returns `false` without changing the cwd on failure.
+- [ ] Add `sys_mkdir(const char *dir)`: thin wrapper over the
+      `filesys_mkdir()`-equivalent from item 2.
+- [ ] Add `sys_readdir(int fd, char *name)`: only valid for an fd that's a
+      directory; must skip `.`/`..` (the provided `dir_readdir()` doesn't
+      filter these out on its own — check and filter if needed); writes
+      into a buffer sized `READDIR_MAX_LEN + 1`.
+- [ ] Add `sys_isdir(int fd)` and `sys_inumber(int fd)`: `inumber()` can be
+      implemented directly with the already-existing
+      `inode_get_inumber()`/`struct inode *` reachable from either a
+      `struct file` or `struct dir`.
+- [ ] Extend `struct fd_entry` (currently just `{ int fd; struct file
+      *file; struct list_elem elem; }`) so a single fd table can represent
+      either an open file or an open directory — e.g. add a `bool is_dir`
+      and a `struct dir *dir` member (or a tagged union). `sys_open()` must
+      check the new directory flag from item 2 and populate the right
+      variant.
+- [ ] Update `sys_close()` to close whichever variant the fd actually is —
+      the spec calls out that `close` is the *only* existing call required
+      to accept a directory fd, implying `read`/`write`/`seek`/`tell` on a
+      directory fd should fail gracefully instead.
+- [ ] Update `sys_read()`/`sys_write()` to return `-1` (not crash) when
+      called on a directory fd.
 
-### 6. Lazy loading / memory-mapped files
+---
+
+## 4. Existing File Syscalls Must Accept Paths — [userprog/syscall.c](userprog/syscall.c)
+
+`sys_create()`, `sys_open()`, and `sys_remove()` currently just forward
+their string argument straight to `filesys_create()`/`filesys_open()`/
+`filesys_remove()`. Once item 2's path resolver lives inside those
+`filesys_*()` functions, these call sites don't need much rewriting — but
+double check:
+
 TODO:
-- [ ] Convert `load_segment()` in [process.c](userprog/process.c) to load
-      pages lazily via the supplemental page table instead of eagerly reading
-      the whole segment at `load()` time.
-- [ ] Implement `SYS_MMAP`/`SYS_MUNMAP` in [syscall.c](userprog/syscall.c)
-      (shared with Module 1), backed by the same supplemental page table
-      infrastructure.
+- [ ] `sys_open()` must succeed for a path that names a directory (storing
+      it via the new `fd_entry` directory variant from item 3) — `create`
+      is explicitly **not** how directories get made (that's `mkdir`), so
+      `sys_create()` on a path that resolves to an existing directory (or
+      whose last component is meant to be a directory) should still behave
+      like today: fail or create a regular file, never silently make a
+      directory.
+- [ ] `sys_remove()` must now also succeed for an **empty** directory
+      (besides the root), in addition to regular files.
 
-### 7. Design document — [vm_design_doc.txt](vm/vm_design_doc.txt)
-- [ ] Fill in the blank "EE 461S Project 3: Virtual Memory" template once the
-      above is implemented.
+---
+
+## 5. Finer-Grained Synchronization — [userprog/syscall.c](userprog/syscall.c), [filesys/](filesys)
+
+Project 3 added exactly one `static struct lock filesys_lock` (private to
+[userprog/syscall.c](userprog/syscall.c), exposed via
+`syscall_filesys_lock_acquire()`/`syscall_filesys_lock_release()` in
+[userprog/syscall.h](userprog/syscall.h)) and wrapped *every* filesystem
+call in it — correct at the time, since the unmodified `filesys/` code
+wasn't reentrant at all. This project explicitly requires removing that:
+*"Your submission must adopt a finer-grained synchronization strategy that
+does not require external synchronization... operations on independent
+entities should be independent."*
+
+TODO:
+- [ ] Remove (or significantly narrow) the single `filesys_lock`
+      chokepoint; push synchronization down into `filesys/` itself instead
+      of guarding it from the syscall layer.
+- [ ] Add synchronization sized to the actual shared resource, e.g.: a
+      lock per open inode (guarding concurrent growth/length updates to
+      *that* inode — ties directly into item 1), a lock per directory
+      (guarding concurrent `dir_add()`/`dir_remove()`/`readdir()` on *that*
+      directory), and something narrow around free-map bitmap allocation
+      (which is inherently one shared resource, so it may legitimately keep
+      a single lock — just not one that also blocks unrelated files from
+      being read/written at the same time).
+- [ ] Verify two processes operating on two different files can actually
+      proceed concurrently without blocking on each other — that's the
+      explicit goal, not merely "doesn't crash under concurrency."
+      `syn-rw` (and its `-persistence` check) specifically test this.
+
+---
+
+## 6. `extract`/`append` Must Handle Paths — [filesys/fsutil.c](filesys/fsutil.c)
+
+The README says this "should not require any significant extra effort,"
+but there's a real bug waiting here: `fsutil_extract()` currently has this
+branch, which **silently skips every directory entry** in the tar archive:
+
+```c
+} else if (type == USTAR_DIRECTORY) {
+    printf("ignoring directory %s\n", file_name);
+}
+```
+
+The Project 4 test harness's `tar` helper program builds nested directory
+trees (used by `dir-mk-tree`, `dir-vine`, etc.) and relies on `extract` to
+recreate that structure in the Pintos filesystem before the regular files
+inside it can be created — if directories are still being ignored, every
+nested-path file create will fail because its parent directory was never
+made.
+
+TODO:
+- [ ] Replace that `printf("ignoring directory...")` branch with an actual
+      call to the new mkdir-equivalent from item 2, so directory entries in
+      an extracted archive really get created.
+- [ ] Confirm `fsutil_extract()`'s `filesys_create()`/`filesys_open()` calls
+      and `fsutil_append()`'s `filesys_open()` call correctly resolve
+      multi-component paths once item 2 lands (they should, for free, since
+      they already go through the generic `filesys_*()` entry points rather
+      than calling `dir_*()` directly) — but verify with a nested-path
+      extract/append by hand, not just by reading the diff.
+
+---
+
+## 7. Design Document — [filesys/filesys_design_doc.txt](filesys/filesys_design_doc.txt)
+- [ ] Fill in the blank "EE 461S Project 4: File Systems" template once the
+      above is implemented — in particular, justify the inode indexing
+      scheme chosen in item 1, and the directory-removal-while-open
+      decision from item 2.
 
 ---
 
 ## Verifying progress
 
-Build and test from **`userprog/`** (not `vm/` — that module isn't part of
-this assignment, see above):
+Build and test from **`filesys/`** (this project's directories are
+`threads devices lib lib/kernel userprog filesys`, per
+[filesys/Make.vars](filesys/Make.vars); `vm` stays commented out):
 
 ```bash
-cd $PINTOS/userprog
+cd $PINTOS/filesys
 make
-make check          # runs tests/userprog and tests/filesys/base
+make check          # runs tests/userprog, tests/filesys/base, tests/filesys/extended
 ```
 
-As of this writing, `make check` reports **"All 75 tests passed."** — see
-[USAGE.md](USAGE.md) for the full build/test/debug workflow.
+Per [tests/filesys/Grading.no-vm](tests/filesys/Grading.no-vm), scoring
+breaks down as:
+
+| Weight | Source |
+|---|---|
+| 30% | `tests/filesys/extended/Rubric.functionality` |
+| 15% | `tests/filesys/extended/Rubric.robustness` |
+| 20% | `tests/filesys/extended/Rubric.persistence` |
+| 20% | `tests/filesys/base/Rubric` |
+| 10% | `tests/userprog/Rubric.functionality` |
+| 5%  | `tests/userprog/Rubric.robustness` |
+
+**Note on "66 tests":** counting distinct named test targets directly from
+each suite's `Make.tests`, I get 62 in `tests/userprog`, 13 in
+`tests/filesys/base`, and 23 "regular" + 22 "-persistence" (`syn-rw` has no
+persistence variant) in `tests/filesys/extended` — none of those groupings
+sums to exactly 66 on their own. If your assignment materials say 66, treat
+that as the number to confirm once `make check` actually runs end to end
+(it will print `N of M tests failed` / `All M tests passed`), rather than
+something to force-fit in advance — the discrepancy is worth a quick
+sanity check with whoever gave you that number, but isn't a blocker to
+starting implementation.

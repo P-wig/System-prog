@@ -236,11 +236,10 @@ sys_exec(const char *cmd_line)
 {
     check_user_string(cmd_line);
 
-    /* TODO (process.c): process_execute() doesn't yet wait for the
-     * child to finish loading or report whether loading succeeded,
-     * so a bad command line currently yields a tid whose process
-     * exits immediately (with process_wait() correctly reporting
-     * its exit code) rather than EXEC failing outright. */
+    /* process_execute() blocks until the child has finished
+     * attempting to load, returning TID_ERROR if it failed, so we
+     * don't need to do anything extra here to report load failure
+     * synchronously -- see struct process_status in process.c. */
     return process_execute(cmd_line);
 }
 
