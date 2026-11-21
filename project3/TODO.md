@@ -57,19 +57,15 @@ TODO:
       one doubly-indirect block.
 - [x] Rewrite `byte_to_sector()` to walk the new index structure instead of
       a single `start + offset`.
-- [ ] Implement real file growth: `inode_create()` should be able to start
+- [x] Implement real file growth: `inode_create()` should be able to start
       a file at length 0, and `inode_write_at()` must allocate new sectors
       on demand when a write extends past the current length — zero-filling
       any gap between the old EOF and the write position. Sparse
       (don't-allocate-until-written) or eager-zero allocation are both
       acceptable; pick one and say so in the design doc.
-- [ ] Remove the file-growth caveat comment in `inode_write_at()` once this
+- [x] Remove the file-growth caveat comment in `inode_write_at()` once this
       works.
-- [ ] Allow the **root directory** to grow past its original fixed 16-entry
-      allocation (`do_format()` in [filesys/filesys.c](filesys/filesys.c)
-      currently calls `dir_create(ROOT_DIR_SECTOR, 16)`) — directories are
-      just files, so this should fall out of file growth working correctly.
-- [ ] A read starting past EOF must return 0 bytes (already true as long as
+- [x] A read starting past EOF must return 0 bytes (already true as long as
       `inode_length()` is accurate); a seek past EOF must not itself extend
       the file (only a later write does).
 
