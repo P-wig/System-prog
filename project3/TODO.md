@@ -45,17 +45,17 @@ also assumes the single-extent layout (`inode->data.start + pos /
 BLOCK_SECTOR_SIZE`).
 
 TODO:
-- [ ] Replace `inode_disk`'s layout with an indexed scheme — direct,
+- [x] Replace `inode_disk`'s layout with an indexed scheme — direct,
       indirect, and doubly-indirect block pointers are the standard choice
       (any scheme is acceptable as long as you justify it in the design doc
       and it doesn't suffer external fragmentation). It must fit in exactly
       `BLOCK_SECTOR_SIZE` (512 bytes) — `inode_create()` already asserts
       this (`ASSERT(sizeof *disk_inode == BLOCK_SECTOR_SIZE)`), so the
       pointer counts need to be sized to match.
-- [ ] Support files as large as the 8 MB partition allows (minus metadata)
+- [x] Support files as large as the 8 MB partition allows (minus metadata)
       — per [filesys/README.md](filesys/README.md), this requires at least
       one doubly-indirect block.
-- [ ] Rewrite `byte_to_sector()` to walk the new index structure instead of
+- [x] Rewrite `byte_to_sector()` to walk the new index structure instead of
       a single `start + offset`.
 - [ ] Implement real file growth: `inode_create()` should be able to start
       a file at length 0, and `inode_write_at()` must allocate new sectors

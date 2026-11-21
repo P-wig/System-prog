@@ -18,6 +18,30 @@ bytes_to_sectors(off_t size)
     return DIV_ROUND_UP(size, BLOCK_SECTOR_SIZE);
 }
 
+/* An indirect block: just an array of sector numbers that fills
+ * exactly one disk sector. Used both for the inode's single
+ * indirect block and for each of the 128 indirect blocks pointed
+ * to by the doubly-indirect block. */
+struct indirect_block {
+    block_sector_t sectors[INDIRECT_CNT];
+};
+
+/* Reads indirect block INDIRECT_SECTOR off disk and returns the
+ * sector number stored at INDEX within it.
+ * Returns 0 (never a valid data sector) if INDIRECT_SECTOR is 0,
+ * i.e. the indirect block itself hasn't been allocated yet. */
+static block_sector_t
+index_block_sector(block_sector_t indirect_sector, size_t index)
+{
+    struct indirect_block ib;
+
+    if (indirect_sector == 0) {
+        return 0;
+    }
+    block_read(fs_device, indirect_sector, &ib);
+    return ib.sectors[index];
+}
+
 /* Returns the block device sector that contains byte offset POS
  * within INODE.
  * Returns -1 if INODE does not contain data for a byte at offset
@@ -25,11 +49,37 @@ bytes_to_sectors(off_t size)
 static block_sector_t
 byte_to_sector(const struct inode *inode, off_t pos)
 {
+    size_t index;
+
     ASSERT(inode != NULL);
-    if (pos < inode->data.length) {
-        return inode->data.start + pos / BLOCK_SECTOR_SIZE;
-    } else {
+    if (pos >= inode->data.length) {
         return -1;
+    }
+
+    index = pos / BLOCK_SECTOR_SIZE;
+
+    /* First 124 sectors come straight out of the inode itself. */
+    if (index < DIRECT_CNT) {
+        return inode->data.direct[index];
+    }
+    index -= DIRECT_CNT;
+
+    /* Next 128 sectors are listed in the one indirect block. */
+    if (index < INDIRECT_CNT) {
+        return index_block_sector(inode->data.indirect, index);
+    }
+    index -= INDIRECT_CNT;
+
+    /* Remaining sectors go through the doubly-indirect block: it
+     * points to up to 128 indirect blocks, each listing 128 data
+     * sectors. */
+    ASSERT(index < (size_t) INDIRECT_CNT * INDIRECT_CNT);
+    {
+        size_t first_level = index / INDIRECT_CNT;
+        size_t second_level = index % INDIRECT_CNT;
+        block_sector_t indirect_sector =
+            index_block_sector(inode->data.double_indirect, first_level);
+        return index_block_sector(indirect_sector, second_level);
     }
 }
 
