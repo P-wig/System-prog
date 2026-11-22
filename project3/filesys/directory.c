@@ -8,11 +8,31 @@
 #include "threads/malloc.h"
 
 /* Creates a directory with space for ENTRY_CNT entries in the
- * given SECTOR.  Returns true if successful, false on failure. */
+ * given SECTOR, whose parent directory's inode is at
+ * PARENT_SECTOR (pass SECTOR itself for the root directory, whose
+ * ".." is defined to be itself). Writes "." and ".." entries into
+ * the new directory, pointing at SECTOR and PARENT_SECTOR
+ * respectively.
+ * Returns true if successful, false on failure. */
 bool
-dir_create(block_sector_t sector, size_t entry_cnt)
+dir_create(block_sector_t sector, block_sector_t parent_sector,
+           size_t entry_cnt)
 {
-    return inode_create(sector, entry_cnt * sizeof(struct dir_entry), true);
+    struct dir *dir;
+    bool success;
+
+    if (!inode_create(sector, entry_cnt * sizeof(struct dir_entry), true)) {
+        return false;
+    }
+
+    dir = dir_open(inode_open(sector));
+    if (dir == NULL) {
+        return false;
+    }
+
+    success = dir_add(dir, ".", sector) && dir_add(dir, "..", parent_sector);
+    dir_close(dir);
+    return success;
 }
 
 /* Opens and returns the directory for the given INODE, of which

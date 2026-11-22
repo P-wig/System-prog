@@ -81,15 +81,15 @@ or a relative path has no meaning today. `struct dir_entry` and
 There are no `.`/`..` entries anywhere.
 
 TODO:
-- [ ] Mark directory inodes as directories — add an `is_dir`-style flag
+- [x] Mark directory inodes as directories — add an `is_dir`-style flag
       somewhere reachable from an inode (e.g. in `struct inode_disk`, or
       tracked alongside it), so code can tell a file inode from a directory
       inode.
-- [ ] When a directory is created, write `.` (self) and `..` (parent)
+- [x] When a directory is created, write `.` (self) and `..` (parent)
       entries into it pointing at the right inode sectors — `dir_create()`/
       `dir_add()` in [filesys/directory.c](filesys/directory.c) don't do
       this today.
-- [ ] Write a path-resolution routine (new code, most naturally in
+- [x] Write a path-resolution routine (new code, most naturally in
       [filesys/filesys.c](filesys/filesys.c)) that:
       - Treats a leading `/` as absolute (start from the root directory)
         and anything else as relative to the **calling process's cwd**.
