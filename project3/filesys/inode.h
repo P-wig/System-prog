@@ -12,11 +12,14 @@ struct bitmap;
 /* Index layout: direct, singly-indirect, and doubly-indirect pointers.
  *
  * A sector holds BLOCK_SECTOR_SIZE / 4 = 128 sector numbers, so:
- *   direct:          124 sectors                  (~62 KB)
+ *   direct:          123 sectors                  (~61.5 KB)
  *   indirect:        128 sectors                  (~64 KB)
  *   doubly-indirect: 128 * 128 = 16384 sectors    (~8 MB)
- * Max file size is 16636 sectors, just over the 8 MB partition. */
-#define DIRECT_CNT   124
+ * Max file size is 16635 sectors, just over the 8 MB partition.
+ * (One direct slot was given up, versus the original 124, to make
+ * room for the is_dir flag below while keeping the struct exactly
+ * one sector.) */
+#define DIRECT_CNT   123
 #define INDIRECT_CNT 128 /* Sector numbers per indirect block. */
 
 /* On-disk inode.
@@ -26,6 +29,7 @@ struct bitmap;
 struct inode_disk {
     off_t          length;                /* File size in bytes. */
     unsigned       magic;                 /* Magic number. */
+    bool           is_dir;                /* True if this inode is a directory. */
     block_sector_t direct[DIRECT_CNT];    /* Direct data sectors. */
     block_sector_t indirect;              /* Sector of an indirect block. */
     block_sector_t double_indirect;       /* Sector of a doubly-indirect block. */
@@ -42,7 +46,7 @@ struct inode {
 };
 
 void inode_init(void);
-bool inode_create(block_sector_t, off_t);
+bool inode_create(block_sector_t, off_t, bool is_dir);
 struct inode *inode_open(block_sector_t);
 struct inode *inode_reopen(struct inode *);
 block_sector_t inode_get_inumber(const struct inode *);
@@ -53,5 +57,6 @@ off_t inode_write_at(struct inode *, const void *, off_t size, off_t offset);
 void inode_deny_write(struct inode *);
 void inode_allow_write(struct inode *);
 off_t inode_length(const struct inode *);
+bool inode_is_dir(const struct inode *);
 
 #endif /* filesys/inode.h */

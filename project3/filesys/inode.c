@@ -234,11 +234,13 @@ inode_init(void)
 
 /* Initializes an inode with LENGTH bytes of data and
  * writes the new inode to sector SECTOR on the file system
- * device.
+ * device. IS_DIR records whether this inode is a directory, so
+ * later code can tell a file inode from a directory inode (see
+ * inode_is_dir()).
  * Returns true if successful.
  * Returns false if memory or disk allocation fails. */
 bool
-inode_create(block_sector_t sector, off_t length)
+inode_create(block_sector_t sector, off_t length, bool is_dir)
 {
     struct inode_disk *disk_inode = NULL;
     bool success = false;
@@ -254,6 +256,7 @@ inode_create(block_sector_t sector, off_t length)
         size_t sectors = bytes_to_sectors(length);
         disk_inode->length = length;
         disk_inode->magic = INODE_MAGIC;
+        disk_inode->is_dir = is_dir;
         if (inode_allocate(disk_inode, sectors)) {
             /* Write the inode itself last, now that inode_allocate()
              * has filled in its direct/indirect/doubly-indirect
@@ -514,4 +517,12 @@ off_t
 inode_length(const struct inode *inode)
 {
     return inode->data.length;
+}
+
+/* Returns true if INODE is a directory, false if it's an ordinary
+ * file. */
+bool
+inode_is_dir(const struct inode *inode)
+{
+    return inode->data.is_dir;
 }
