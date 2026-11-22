@@ -76,11 +76,10 @@ file_read_at(struct file *file, void *buffer, off_t size, off_t file_ofs)
 }
 
 /* Writes SIZE bytes from BUFFER into FILE,
- * starting at the file's current position.
- * Returns the number of bytes actually written,
- * which may be less than SIZE if end of file is reached.
- * (Normally we'd grow the file in that case, but file growth is
- * not yet implemented.)
+ * starting at the file's current position, growing FILE first if
+ * the write extends past its current end.
+ * Returns the number of bytes actually written, which may be less
+ * than SIZE only if the disk fills up during growth.
  * Advances FILE's position by the number of bytes read. */
 off_t
 file_write(struct file *file, const void *buffer, off_t size)
@@ -92,11 +91,10 @@ file_write(struct file *file, const void *buffer, off_t size)
 }
 
 /* Writes SIZE bytes from BUFFER into FILE,
- * starting at offset FILE_OFS in the file.
- * Returns the number of bytes actually written,
- * which may be less than SIZE if end of file is reached.
- * (Normally we'd grow the file in that case, but file growth is
- * not yet implemented.)
+ * starting at offset FILE_OFS in the file, growing FILE first if
+ * the write extends past its current end.
+ * Returns the number of bytes actually written, which may be less
+ * than SIZE only if the disk fills up during growth.
  * The file's current position is unaffected. */
 off_t
 file_write_at(struct file *file, const void *buffer, off_t size,

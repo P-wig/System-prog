@@ -9,13 +9,26 @@
 
 struct bitmap;
 
+/* Index layout: direct, singly-indirect, and doubly-indirect pointers.
+ *
+ * A sector holds BLOCK_SECTOR_SIZE / 4 = 128 sector numbers, so:
+ *   direct:          124 sectors                  (~62 KB)
+ *   indirect:        128 sectors                  (~64 KB)
+ *   doubly-indirect: 128 * 128 = 16384 sectors    (~8 MB)
+ * Max file size is 16636 sectors, just over the 8 MB partition. */
+#define DIRECT_CNT   124
+#define INDIRECT_CNT 128 /* Sector numbers per indirect block. */
+
 /* On-disk inode.
- * Must be exactly BLOCK_SECTOR_SIZE bytes long. */
+ * Must be exactly BLOCK_SECTOR_SIZE bytes long.
+ * A sector number of 0 in any pointer means "not allocated" (sector 0
+ * holds the free map, so it is never a data sector). */
 struct inode_disk {
-    block_sector_t start;       /* First data sector. */
-    off_t          length;      /* File size in bytes. */
-    unsigned       magic;       /* Magic number. */
-    uint32_t       unused[125]; /* Not used. */
+    off_t          length;                /* File size in bytes. */
+    unsigned       magic;                 /* Magic number. */
+    block_sector_t direct[DIRECT_CNT];    /* Direct data sectors. */
+    block_sector_t indirect;              /* Sector of an indirect block. */
+    block_sector_t double_indirect;       /* Sector of a doubly-indirect block. */
 };
 
 /* In-memory inode. */
