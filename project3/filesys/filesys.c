@@ -124,7 +124,16 @@ filesys_resolve_path(const char *path, char name[NAME_MAX + 1])
         next_token = strtok_r(NULL, "/", &save_ptr);
         if (next_token == NULL) {
             /* TOKEN is the final component: stop here and leave it
-             * for the caller to look up (or create). */
+             * for the caller to look up (or create).
+             * Reject it outright if it's too long to fit NAME
+             * rather than silently truncating it -- dir_add()'s own
+             * length check can no longer catch this once the name
+             * has already been copied out truncated. */
+            if (strlen(token) > NAME_MAX) {
+                dir_close(dir);
+                free(path_copy);
+                return NULL;
+            }
             strlcpy(name, token, NAME_MAX + 1);
             found_component = true;
             break;
@@ -158,19 +167,22 @@ filesys_resolve_path(const char *path, char name[NAME_MAX + 1])
     return dir;
 }
 
-/* Creates a file named NAME with the given INITIAL_SIZE.
+/* Creates a file named NAME (an absolute or relative path) with
+ * the given INITIAL_SIZE.
  * Returns true if successful, false otherwise.
- * Fails if a file named NAME already exists,
- * or if internal memory allocation fails. */
+ * Fails if the path's directory doesn't exist, if a file or
+ * directory already exists at NAME, or if internal memory
+ * allocation fails. */
 bool
 filesys_create(const char *name, off_t initial_size)
 {
     block_sector_t inode_sector = 0;
-    struct dir *dir = dir_open_root();
+    char final_name[NAME_MAX + 1];
+    struct dir *dir = filesys_resolve_path(name, final_name);
     bool success = (dir != NULL
                     && free_map_allocate(1, &inode_sector)
                     && inode_create(inode_sector, initial_size, false)
-                    && dir_add(dir, name, inode_sector));
+                    && dir_add(dir, final_name, inode_sector));
 
     if (!success && inode_sector != 0) {
         free_map_release(inode_sector, 1);
@@ -180,35 +192,106 @@ filesys_create(const char *name, off_t initial_size)
     return success;
 }
 
-/* Opens the file with the given NAME.
+/* Creates a directory named NAME (an absolute or relative path).
+ * Returns true if successful, false otherwise.
+ * Fails if the path's parent directory doesn't fully exist, if a
+ * file or directory already exists at NAME, or if internal memory
+ * allocation fails. */
+bool
+filesys_mkdir(const char *name)
+{
+    block_sector_t inode_sector = 0;
+    char final_name[NAME_MAX + 1];
+    struct dir *dir = filesys_resolve_path(name, final_name);
+    block_sector_t parent_sector = 0;
+    bool dir_made = false;
+    bool success;
+
+    if (dir != NULL) {
+        parent_sector = inode_get_inumber(dir_get_inode(dir));
+    }
+
+    success = (dir != NULL
+               && free_map_allocate(1, &inode_sector)
+               && (dir_made = dir_create(inode_sector, parent_sector, 0))
+               && dir_add(dir, final_name, inode_sector));
+
+    if (!success && inode_sector != 0) {
+        if (dir_made) {
+            /* dir_create() fully wrote the new directory's inode
+             * (and the data sector backing its "." / ".." entries)
+             * to disk before dir_add() failed to link it into DIR
+             * (most commonly because NAME already exists there).
+             * Reopen it so inode_close() reclaims every sector it
+             * owns, not just its own header sector. */
+            struct inode *orphan = inode_open(inode_sector);
+            if (orphan != NULL) {
+                inode_remove(orphan);
+                inode_close(orphan);
+            }
+        } else {
+            /* dir_create() never got as far as writing a valid
+             * inode header to INODE_SECTOR (e.g. disk full
+             * mid-allocation). Same accepted tradeoff as
+             * inode_create()'s own partial-allocation case: release
+             * the inode's own sector, but don't try to roll back
+             * whatever data sectors it managed to allocate first. */
+            free_map_release(inode_sector, 1);
+        }
+    }
+    dir_close(dir);
+
+    return success;
+}
+
+/* Opens the file with the given NAME (an absolute or relative
+ * path).
  * Returns the new file if successful or a null pointer
  * otherwise.
- * Fails if no file named NAME exists,
- * or if an internal memory allocation fails. */
+ * Fails if no file or directory named NAME exists, or if an
+ * internal memory allocation fails. */
 struct file *
 filesys_open(const char *name)
 {
-    struct dir *dir = dir_open_root();
+    char final_name[NAME_MAX + 1];
+    struct dir *dir = filesys_resolve_path(name, final_name);
     struct inode *inode = NULL;
 
     if (dir != NULL) {
-        dir_lookup(dir, name, &inode);
+        dir_lookup(dir, final_name, &inode);
     }
     dir_close(dir);
 
     return file_open(inode);
 }
 
-/* Deletes the file named NAME.
+/* Deletes the file or directory named NAME (an absolute or
+ * relative path).
  * Returns true if successful, false on failure.
- * Fails if no file named NAME exists,
- * or if an internal memory allocation fails. */
+ * Fails if no file or directory named NAME exists, if NAME names
+ * the root directory, or if an internal memory allocation fails.
+ * NOTE: root protection here is a minimal, targeted guard needed
+ * because routing through filesys_resolve_path() means "/" is now
+ * resolvable at all (it used to just never match anything). Full
+ * directory-removal semantics -- a directory must be empty, and
+ * the policy for removing one that's open or some process's cwd
+ * -- are the next TODO item. */
 bool
 filesys_remove(const char *name)
 {
-    struct dir *dir = dir_open_root();
-    bool success = dir != NULL && dir_remove(dir, name);
+    char final_name[NAME_MAX + 1];
+    struct dir *dir = filesys_resolve_path(name, final_name);
+    bool success = false;
 
+    if (dir != NULL) {
+        struct inode *inode = NULL;
+        bool is_root = dir_lookup(dir, final_name, &inode)
+                       && inode_get_inumber(inode) == ROOT_DIR_SECTOR;
+        if (inode != NULL) {
+            inode_close(inode);
+        }
+        success = !is_root && dir_remove(dir, final_name);
+    }
     dir_close(dir);
 
     return success;

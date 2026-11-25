@@ -100,9 +100,9 @@ TODO:
       - Returns the containing directory and final component name
         separately, since `mkdir("/a/b/c")` needs `/a/b` to already exist
         and `/a/b/c` to not.
-- [ ] Route `filesys_create()`, `filesys_open()`, and `filesys_remove()`
+- [x] Route `filesys_create()`, `filesys_open()`, and `filesys_remove()`
       through that resolver instead of `dir_open_root()`.
-- [ ] Add a `filesys_mkdir()`-equivalent (or extend `dir_create()`'s
+- [x] Add a `filesys_mkdir()`-equivalent (or extend `dir_create()`'s
       caller) that resolves the parent, allocates a new inode sector,
       calls `dir_create()`, writes `.`/`..`, and `dir_add()`s it into the
       parent — failing if the parent path doesn't fully exist or the name
