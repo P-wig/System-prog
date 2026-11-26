@@ -518,12 +518,75 @@ once that document gets filled in.
 
 ---
 
+## 3. New Directory Syscalls — [userprog/syscall.c](userprog/syscall.c)
+
+### `sys_chdir()`
+
+**Concept.** `chdir(path)` changes *where relative paths start*. Because
+a process's cwd is an already-open directory handle (not a path string —
+see Section 2's cwd item), changing directory means: (1) resolve the path
+to a directory, (2) open it, (3) swap that handle in for the old one and
+close the old one. The order matters: if resolution fails (missing path, a
+regular file, a missing intermediate directory) the process must be left
+**exactly as it was** — the old cwd is only closed once the new one is
+safely in hand. This is why `chdir` is also what finally lets user code
+*move around* the hierarchy that `mkdir` builds.
+
+**What we did.** Two pieces:
+
+1. **`filesys_open_dir(name)`** in [filesys.c](filesys/filesys.c) — a new
+   general helper that returns a `struct dir *` for a path, or `NULL`. It
+   reuses `filesys_resolve_path()` rather than re-implementing path
+   walking: resolve to `(parent_dir, final_name)`, `dir_lookup()` the final
+   name inside the parent, then reject it with `inode_is_dir()` if it names
+   a regular file, and finally `dir_open()` the inode (which takes
+   ownership of it, so there's no leak on either exit path). Nothing about
+   it is chdir-specific, so Section 3's `sys_open()` directory support can
+   reuse it.
+
+   Because the resolver turns `"/"` into `(root, ".")` and every directory
+   has real `.`/`..` entries, edge cases need no code: `chdir("/")`,
+   `chdir("//")`, `chdir("/..")`, and `chdir(".")` all just work through
+   the same lookup.
+
+2. **`sys_chdir()`** in [syscall.c](userprog/syscall.c) — validates the
+   user string, then under `filesys_lock`:
+
+   ```c
+   new_cwd = filesys_open_dir(dir);
+   if (new_cwd != NULL) {
+       old_cwd = cur->cwd;
+       cur->cwd = new_cwd;
+       dir_close(old_cwd);
+   }
+   ```
+
+   The swap only happens on success, giving the "return `false` without
+   changing cwd" guarantee for free. `dir_close(old_cwd)` is what drops the
+   old directory's `open_cnt` — which matters for Section 2's removal rule:
+   a directory is "busy" while any process has it as cwd, so *leaving* it
+   with `chdir` is what makes it removable again. A new `SYS_CHDIR` case in
+   `syscall_handler()` forwards the argument and stores the boolean in
+   `eax`.
+
+**Verification.** `mkdir` isn't a syscall yet, so the official `dir-*` tests
+can't run end to end. Instead we temporarily repurposed a test to boot the
+kernel in QEMU and check, with only `chdir`/`create`: `/`, `/..`, `.`, `//`
+succeed; a missing path, `""`, an existing *file*, and `file/x` all fail;
+and `chdir("/")` still works after those failures. All 10 checks passed
+(the swap is exercised on every success, so a double-close or leak would
+have panicked). The test was then reverted. Actually *moving into* a
+subdirectory is only testable once `sys_mkdir()` lands, which is the next
+item.
+
+---
+
 ## Still to come
 
 Sections 1 (Indexed and Extensible Files) and 2 (Subdirectories /
 Path Resolution) are both fully complete — every `TODO.md` item in
-either section is checked off. What's left is Section 3's directory
-syscalls, Section 4's path-aware existing syscalls, Section 5's
-finer-grained locking, Section 6's `extract`/`append` fix, and
-Section 7's design document. This file will grow to cover each one,
-in the same order, as we complete them.
+either section is checked off. In Section 3, `sys_chdir()` is done. What's
+left is the rest of Section 3's directory syscalls, Section 4's path-aware
+existing syscalls, Section 5's finer-grained locking, Section 6's
+`extract`/`append` fix, and Section 7's design document. This file will
+grow to cover each one, in the same order, as we complete them.

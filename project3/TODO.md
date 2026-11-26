@@ -136,7 +136,7 @@ The syscall numbers and user-facing prototypes already exist from Project
 they currently fall through to `default: sys_exit(-1);`.
 
 TODO:
-- [ ] Add `sys_chdir(const char *dir)`: resolve `dir` (absolute or
+- [x] Add `sys_chdir(const char *dir)`: resolve `dir` (absolute or
       relative) to a directory, swap it in for the calling thread's cwd on
       success. Returns `false` without changing the cwd on failure.
 - [ ] Add `sys_mkdir(const char *dir)`: thin wrapper over the

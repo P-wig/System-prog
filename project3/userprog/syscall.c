@@ -53,7 +53,7 @@ static int sys_write(int fd, const void *buffer, unsigned length);
 static void sys_seek(int fd, unsigned position);
 static unsigned sys_tell(int fd);
 static void sys_close(int fd);
-
+static bool sys_chdir(const char *dir);
 static struct fd_entry *lookup_fd(int fd);
 
 void
@@ -124,6 +124,10 @@ syscall_handler(struct intr_frame *f)
 
     case SYS_CLOSE:
         sys_close((int)arg_word(f, 1));
+        break;
+
+    case SYS_CHDIR:
+        f->eax = (uint32_t)sys_chdir((const char *)arg_word(f, 1));
         break;
 
     case SYS_MMAP:
@@ -446,6 +450,28 @@ sys_close(int fd)
     lock_release(&filesys_lock);
 
     free(fde);
+}
+
+/* SYS_CHDIR. */
+static bool
+sys_chdir(const char *dir)
+{
+    struct thread *cur = thread_current();
+    struct dir *new_cwd;
+    struct dir *old_cwd;
+
+    check_user_string(dir);
+
+    lock_acquire(&filesys_lock);
+    new_cwd = filesys_open_dir(dir);
+    if (new_cwd != NULL) {
+        old_cwd = cur->cwd;
+        cur->cwd = new_cwd;
+        dir_close(old_cwd);
+    }
+    lock_release(&filesys_lock);
+
+    return new_cwd != NULL;
 }
 
 /* Closes every file descriptor the current thread still has open.

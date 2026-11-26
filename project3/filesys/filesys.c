@@ -272,6 +272,33 @@ filesys_open(const char *name)
     return file_open(inode);
 }
 
+/* Opens the directory named NAME (an absolute or relative path).
+ * Returns the new directory if successful or a null pointer
+ * otherwise.  The caller must dir_close() it.
+ * Fails if NAME doesn't exist or names a regular file. */
+struct dir *
+filesys_open_dir(const char *name)
+{
+    char final_name[NAME_MAX + 1];
+    struct dir *parent = filesys_resolve_path(name, final_name);
+    struct inode *inode = NULL;
+
+    if (parent == NULL) {
+        return NULL;
+    }
+    dir_lookup(parent, final_name, &inode);
+    dir_close(parent);
+
+    if (inode == NULL) {
+        return NULL;
+    }
+    if (!inode_is_dir(inode)) {
+        inode_close(inode);
+        return NULL;
+    }
+    return dir_open(inode); /* Takes ownership of INODE. */
+}
+
 /* Deletes the file or directory named NAME (an absolute or
  * relative path).
  * Returns true if successful, false on failure.
