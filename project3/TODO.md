@@ -107,7 +107,7 @@ TODO:
       calls `dir_create()`, writes `.`/`..`, and `dir_add()`s it into the
       parent — failing if the parent path doesn't fully exist or the name
       already exists.
-- [ ] Add a per-process current working directory: a `struct dir *cwd`
+- [x] Add a per-process current working directory: a `struct dir *cwd`
       (or equivalent) field on `struct thread` in
       [threads/thread.h](threads/thread.h), next to the `pstatus`/`fd_list`
       fields already added for Project 3. Initialize the first process's
@@ -116,19 +116,13 @@ TODO:
       child inherit the parent's cwd (reopen the same directory, not
       re-resolve a path) rather than resetting to root. Close it in
       `process_exit()`.
-- [ ] Update `dir_remove()`/`filesys_remove()` semantics: a directory can
+- [x] Update `dir_remove()`/`filesys_remove()` semantics: a directory can
       only be removed if it's empty (nothing besides `.`/`..`), and the
       root can never be removed. Decide — and document in the design
       doc — whether removing a directory that's open or is some process's
       cwd is allowed; if you allow it, opening/creating inside a removed
       directory must then fail. `dir-rm-cwd`, `dir-rm-parent`, and
       `dir-rm-root` specifically probe this behavior.
-- [ ] Decide whether to keep `NAME_MAX` (14, in
-      [filesys/directory.h](filesys/directory.h)) for individual path
-      components or raise it; either way, full path names must be allowed
-      to be much longer than 14 characters, since they're resolved
-      component-by-component, not as one name.
-
 ---
 
 ## 3. New Directory Syscalls — [userprog/syscall.c](userprog/syscall.c)

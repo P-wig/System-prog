@@ -8,6 +8,7 @@
 #include "filesys/free-map.h"
 #include "filesys/inode.h"
 #include "threads/malloc.h"
+#include "threads/thread.h"
 
 /* Partition that contains the file system. */
 struct block *fs_device;
@@ -47,17 +48,23 @@ filesys_done(void)
  * calling thread's current working directory for a relative one.
  * The caller must dir_close() the result.
  *
- * TODO: once a per-process cwd field exists on struct thread,
- * relative paths should start from thread_current()->cwd instead
- * of always falling back to the root. Until then, there's no
- * other directory a relative path could mean anyway, since nothing
- * can enter a non-root directory without that field. */
+ * Falls back to the root for a relative path if the calling
+ * thread has no cwd of its own (USERPROG is undefined, or this is
+ * a kernel-only thread that never went through process_execute(),
+ * such as the one running fsutil.c's command-line actions) -- there
+ * being no other directory a relative path could sensibly mean in
+ * that case. */
 static struct dir *
 resolve_start_dir(const char *path)
 {
     if (path[0] == '/') {
         return dir_open_root();
     }
+#ifdef USERPROG
+    if (thread_current()->cwd != NULL) {
+        return dir_reopen(thread_current()->cwd);
+    }
+#endif
     return dir_open_root();
 }
 
@@ -269,29 +276,16 @@ filesys_open(const char *name)
  * relative path).
  * Returns true if successful, false on failure.
  * Fails if no file or directory named NAME exists, if NAME names
- * the root directory, or if an internal memory allocation fails.
- * NOTE: root protection here is a minimal, targeted guard needed
- * because routing through filesys_resolve_path() means "/" is now
- * resolvable at all (it used to just never match anything). Full
- * directory-removal semantics -- a directory must be empty, and
- * the policy for removing one that's open or some process's cwd
- * -- are the next TODO item. */
+ * the root directory, if NAME names a non-empty or currently-busy
+ * directory, or if an internal memory allocation fails -- see
+ * dir_remove() for the exact rules. */
 bool
 filesys_remove(const char *name)
 {
     char final_name[NAME_MAX + 1];
     struct dir *dir = filesys_resolve_path(name, final_name);
-    bool success = false;
+    bool success = dir != NULL && dir_remove(dir, final_name);
 
-    if (dir != NULL) {
-        struct inode *inode = NULL;
-        bool is_root = dir_lookup(dir, final_name, &inode)
-                       && inode_get_inumber(inode) == ROOT_DIR_SECTOR;
-        if (inode != NULL) {
-            inode_close(inode);
-        }
-        success = !is_root && dir_remove(dir, final_name);
-    }
     dir_close(dir);
 
     return success;

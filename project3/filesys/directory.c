@@ -188,9 +188,36 @@ done:
     return success;
 }
 
+/* Returns true if the directory whose data lives in INODE
+ * contains no entries besides its own "." and "..". */
+static bool
+dir_is_empty(struct inode *inode)
+{
+    struct dir_entry e;
+    off_t ofs;
+
+    for (ofs = 0; inode_read_at(inode, &e, sizeof e, ofs) == sizeof e;
+         ofs += sizeof e) {
+        if (e.in_use && strcmp(e.name, ".") != 0
+            && strcmp(e.name, "..") != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /* Removes any entry for NAME in DIR.
- * Returns true if successful, false on failure,
- * which occurs only if there is no file with the given NAME. */
+ * Returns true if successful, false on failure.
+ * Fails if there is no file or directory with the given NAME, if
+ * NAME names the root directory (which can never be removed), or
+ * if NAME names a directory that either isn't empty (contains
+ * anything besides "." and "..") or is currently in use -- open as
+ * a file descriptor, or some process's cwd, both of which hold it
+ * open the same way (inode_open_cnt() counts every live reference
+ * no matter which kind). Ordinary files have no such restriction:
+ * Pintos (like Unix) allows removing a file that's still open --
+ * existing openers keep using it until their last close, and only
+ * then is it actually freed (see inode_close()). */
 bool
 dir_remove(struct dir *dir, const char *name)
 {
@@ -207,9 +234,18 @@ dir_remove(struct dir *dir, const char *name)
         goto done;
     }
 
+    if (e.inode_sector == ROOT_DIR_SECTOR) {
+        goto done;
+    }
+
     /* Open inode. */
     inode = inode_open(e.inode_sector);
     if (inode == NULL) {
+        goto done;
+    }
+
+    if (inode_is_dir(inode)
+        && (inode_open_cnt(inode) > 1 || !dir_is_empty(inode))) {
         goto done;
     }
 

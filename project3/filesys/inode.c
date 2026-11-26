@@ -526,3 +526,14 @@ inode_is_dir(const struct inode *inode)
 {
     return inode->data.is_dir;
 }
+
+/* Returns the number of openers currently holding INODE open
+ * (including the caller's own reference, if it holds one via
+ * inode_open()/inode_reopen()). Used to tell whether a directory
+ * is "busy" -- e.g. still open as a file descriptor, or still some
+ * process's cwd, both of which keep it open the same way. */
+int
+inode_open_cnt(const struct inode *inode)
+{
+    return inode->open_cnt;
+}

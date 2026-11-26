@@ -95,6 +95,14 @@ struct thread {
     /* Owned by userprog/process.c. */
     uint32_t *pagedir; /* Page directory. */
 
+    /* This process's current working directory, as an already-open
+     * `struct dir *' (not a path to re-resolve). Reopened from the
+     * parent's cwd by process_execute() for every new process
+     * (including the very first one, whose "parent" -- the initial
+     * kernel thread -- has no cwd of its own, so process_execute()
+     * falls back to the root). Closed by process_exit(). */
+    struct dir *cwd;
+
     /* This process's own executable file, kept open (and
      * write-denied via file_deny_write()) for as long as the
      * process is running; see "Denying Writes to Executables" in
