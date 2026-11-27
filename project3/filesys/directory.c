@@ -8,11 +8,31 @@
 #include "threads/malloc.h"
 
 /* Creates a directory with space for ENTRY_CNT entries in the
- * given SECTOR.  Returns true if successful, false on failure. */
+ * given SECTOR, whose parent directory's inode is at
+ * PARENT_SECTOR (pass SECTOR itself for the root directory, whose
+ * ".." is defined to be itself). Writes "." and ".." entries into
+ * the new directory, pointing at SECTOR and PARENT_SECTOR
+ * respectively.
+ * Returns true if successful, false on failure. */
 bool
-dir_create(block_sector_t sector, size_t entry_cnt)
+dir_create(block_sector_t sector, block_sector_t parent_sector,
+           size_t entry_cnt)
 {
-    return inode_create(sector, entry_cnt * sizeof(struct dir_entry));
+    struct dir *dir;
+    bool success;
+
+    if (!inode_create(sector, entry_cnt * sizeof(struct dir_entry), true)) {
+        return false;
+    }
+
+    dir = dir_open(inode_open(sector));
+    if (dir == NULL) {
+        return false;
+    }
+
+    success = dir_add(dir, ".", sector) && dir_add(dir, "..", parent_sector);
+    dir_close(dir);
+    return success;
 }
 
 /* Opens and returns the directory for the given INODE, of which
@@ -168,9 +188,36 @@ done:
     return success;
 }
 
+/* Returns true if the directory whose data lives in INODE
+ * contains no entries besides its own "." and "..". */
+static bool
+dir_is_empty(struct inode *inode)
+{
+    struct dir_entry e;
+    off_t ofs;
+
+    for (ofs = 0; inode_read_at(inode, &e, sizeof e, ofs) == sizeof e;
+         ofs += sizeof e) {
+        if (e.in_use && strcmp(e.name, ".") != 0
+            && strcmp(e.name, "..") != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /* Removes any entry for NAME in DIR.
- * Returns true if successful, false on failure,
- * which occurs only if there is no file with the given NAME. */
+ * Returns true if successful, false on failure.
+ * Fails if there is no file or directory with the given NAME, if
+ * NAME names the root directory (which can never be removed), or
+ * if NAME names a directory that either isn't empty (contains
+ * anything besides "." and "..") or is currently in use -- open as
+ * a file descriptor, or some process's cwd, both of which hold it
+ * open the same way (inode_open_cnt() counts every live reference
+ * no matter which kind). Ordinary files have no such restriction:
+ * Pintos (like Unix) allows removing a file that's still open --
+ * existing openers keep using it until their last close, and only
+ * then is it actually freed (see inode_close()). */
 bool
 dir_remove(struct dir *dir, const char *name)
 {
@@ -187,9 +234,18 @@ dir_remove(struct dir *dir, const char *name)
         goto done;
     }
 
+    if (e.inode_sector == ROOT_DIR_SECTOR) {
+        goto done;
+    }
+
     /* Open inode. */
     inode = inode_open(e.inode_sector);
     if (inode == NULL) {
+        goto done;
+    }
+
+    if (inode_is_dir(inode)
+        && (inode_open_cnt(inode) > 1 || !dir_is_empty(inode))) {
         goto done;
     }
 

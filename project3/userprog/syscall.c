@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <string.h>
 #include <syscall-nr.h>
 
 #include "devices/input.h"
@@ -22,11 +23,13 @@
 #define STDIN_FILENO  0
 #define STDOUT_FILENO 1
 
-/* One file a process currently has open, mapping its
- * process-local file descriptor to the underlying kernel file. */
+/* One file or directory a process currently has open, mapping its
+ * process-local file descriptor to the underlying kernel object. */
 struct fd_entry {
     int              fd;
+    bool             is_dir;
     struct file     *file;
+    struct dir      *dir;
     struct list_elem elem;
 };
 
@@ -53,7 +56,11 @@ static int sys_write(int fd, const void *buffer, unsigned length);
 static void sys_seek(int fd, unsigned position);
 static unsigned sys_tell(int fd);
 static void sys_close(int fd);
-
+static bool sys_chdir(const char *dir);
+static bool sys_mkdir(const char *dir);
+static bool sys_readdir(int fd, char *name);
+static bool sys_isdir(int fd);
+static int sys_inumber(int fd);
 static struct fd_entry *lookup_fd(int fd);
 
 void
@@ -124,6 +131,27 @@ syscall_handler(struct intr_frame *f)
 
     case SYS_CLOSE:
         sys_close((int)arg_word(f, 1));
+        break;
+
+    case SYS_CHDIR:
+        f->eax = (uint32_t)sys_chdir((const char *)arg_word(f, 1));
+        break;
+
+    case SYS_MKDIR:
+        f->eax = (uint32_t)sys_mkdir((const char *)arg_word(f, 1));
+        break;
+
+    case SYS_READDIR:
+        f->eax = (uint32_t)sys_readdir((int)arg_word(f, 1),
+                                        (char *)arg_word(f, 2));
+        break;
+
+    case SYS_ISDIR:
+        f->eax = (uint32_t)sys_isdir((int)arg_word(f, 1));
+        break;
+
+    case SYS_INUMBER:
+        f->eax = (uint32_t)sys_inumber((int)arg_word(f, 1));
         break;
 
     case SYS_MMAP:
@@ -285,29 +313,42 @@ static int
 sys_open(const char *file)
 {
     struct thread *cur = thread_current();
-    struct file *opened;
+    struct file *opened_file;
+    struct dir *opened_dir = NULL;
     struct fd_entry *fde;
 
     check_user_string(file);
 
     lock_acquire(&filesys_lock);
-    opened = filesys_open(file);
+    opened_file = filesys_open(file);
+    if (opened_file != NULL
+        && inode_is_dir(file_get_inode(opened_file))) {
+        opened_dir = dir_open(inode_reopen(file_get_inode(opened_file)));
+        file_close(opened_file);
+        opened_file = NULL;
+    }
     lock_release(&filesys_lock);
 
-    if (opened == NULL) {
+    if (opened_file == NULL && opened_dir == NULL) {
         return -1;
     }
 
     fde = malloc(sizeof *fde);
     if (fde == NULL) {
         lock_acquire(&filesys_lock);
-        file_close(opened);
+        if (opened_dir != NULL) {
+            dir_close(opened_dir);
+        } else {
+            file_close(opened_file);
+        }
         lock_release(&filesys_lock);
         return -1;
     }
 
     fde->fd = cur->fd_next++;
-    fde->file = opened;
+    fde->is_dir = opened_dir != NULL;
+    fde->file = opened_file;
+    fde->dir = opened_dir;
     list_push_back(&cur->fd_list, &fde->elem);
 
     return fde->fd;
@@ -320,7 +361,7 @@ sys_filesize(int fd)
     struct fd_entry *fde = lookup_fd(fd);
     int length;
 
-    if (fde == NULL) {
+    if (fde == NULL || fde->is_dir) {
         return -1;
     }
 
@@ -355,7 +396,7 @@ sys_read(int fd, void *buffer, unsigned length)
     }
 
     fde = lookup_fd(fd);
-    if (fde == NULL) {
+    if (fde == NULL || fde->is_dir) {
         return -1;
     }
 
@@ -385,7 +426,7 @@ sys_write(int fd, const void *buffer, unsigned length)
     }
 
     fde = lookup_fd(fd);
-    if (fde == NULL) {
+    if (fde == NULL || fde->is_dir) {
         return -1;
     }
 
@@ -402,7 +443,7 @@ sys_seek(int fd, unsigned position)
 {
     struct fd_entry *fde = lookup_fd(fd);
 
-    if (fde == NULL) {
+    if (fde == NULL || fde->is_dir) {
         return;
     }
 
@@ -418,7 +459,7 @@ sys_tell(int fd)
     struct fd_entry *fde = lookup_fd(fd);
     off_t pos;
 
-    if (fde == NULL) {
+    if (fde == NULL || fde->is_dir) {
         return 0;
     }
 
@@ -442,10 +483,109 @@ sys_close(int fd)
     list_remove(&fde->elem);
 
     lock_acquire(&filesys_lock);
-    file_close(fde->file);
+    if (fde->is_dir) {
+        dir_close(fde->dir);
+    } else {
+        file_close(fde->file);
+    }
     lock_release(&filesys_lock);
 
     free(fde);
+}
+
+/* SYS_CHDIR. */
+static bool
+sys_chdir(const char *dir)
+{
+    struct thread *cur = thread_current();
+    struct dir *new_cwd;
+    struct dir *old_cwd;
+
+    check_user_string(dir);
+
+    lock_acquire(&filesys_lock);
+    new_cwd = filesys_open_dir(dir);
+    if (new_cwd != NULL) {
+        old_cwd = cur->cwd;
+        cur->cwd = new_cwd;
+        dir_close(old_cwd);
+    }
+    lock_release(&filesys_lock);
+
+    return new_cwd != NULL;
+}
+
+/* SYS_MKDIR. */
+static bool
+sys_mkdir(const char *dir)
+{
+    bool success;
+
+    check_user_string(dir);
+
+    lock_acquire(&filesys_lock);
+    success = filesys_mkdir(dir);
+    lock_release(&filesys_lock);
+
+    return success;
+}
+
+/* SYS_READDIR. */
+static bool
+sys_readdir(int fd, char *name)
+{
+    struct fd_entry *fde;
+    char entry_name[NAME_MAX + 1];
+    bool success = false;
+
+    check_user_range(name, NAME_MAX + 1);
+
+    fde = lookup_fd(fd);
+    if (fde == NULL || !fde->is_dir) {
+        return false;
+    }
+
+    lock_acquire(&filesys_lock);
+    while (dir_readdir(fde->dir, entry_name)) {
+        if (strcmp(entry_name, ".") != 0 && strcmp(entry_name, "..") != 0) {
+            strlcpy(name, entry_name, NAME_MAX + 1);
+            success = true;
+            break;
+        }
+    }
+    lock_release(&filesys_lock);
+
+    return success;
+}
+
+/* SYS_ISDIR. */
+static bool
+sys_isdir(int fd)
+{
+    struct fd_entry *fde = lookup_fd(fd);
+
+    return fde != NULL && fde->is_dir;
+}
+
+/* SYS_INUMBER. */
+static int
+sys_inumber(int fd)
+{
+    struct fd_entry *fde = lookup_fd(fd);
+    struct inode *inode;
+    block_sector_t inumber;
+
+    if (fde == NULL) {
+        return -1;
+    }
+
+    lock_acquire(&filesys_lock);
+    inode = fde->is_dir ? dir_get_inode(fde->dir)
+                        : file_get_inode(fde->file);
+    inumber = inode_get_inumber(inode);
+    lock_release(&filesys_lock);
+
+    return (int)inumber;
 }
 
 /* Closes every file descriptor the current thread still has open.
@@ -461,7 +601,11 @@ syscall_close_all_files(void)
             list_entry(list_pop_front(&cur->fd_list), struct fd_entry, elem);
 
         lock_acquire(&filesys_lock);
-        file_close(fde->file);
+        if (fde->is_dir) {
+            dir_close(fde->dir);
+        } else {
+            file_close(fde->file);
+        }
         lock_release(&filesys_lock);
 
         free(fde);

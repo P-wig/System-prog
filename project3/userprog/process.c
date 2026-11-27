@@ -57,6 +57,7 @@ struct process_status {
 struct start_process_args {
     char                   *file_name; /* Command line; a palloc'd page owned by this struct until start_process() frees it. */
     struct process_status *ps;        /* New process's shared exit-status record. */
+    struct dir             *cwd;      /* New process's cwd, already reopened from the parent's. */
 };
 
 static thread_func start_process NO_RETURN;
@@ -112,6 +113,28 @@ process_execute(const char *file_name)
     strlcpy(args->file_name, file_name, PGSIZE);
     args->ps = ps;
 
+    /* The new process inherits our cwd -- reopened (sharing the
+     * same underlying inode), not re-resolved from a path, so it
+     * keeps working even if its name later changes or stops
+     * existing. We're the "parent" for every process_execute()
+     * call, including the very first one: the initial kernel
+     * thread's cwd is NULL (it never had one), so that case falls
+     * back to the root, which is exactly "the first process's cwd
+     * is the root." This touches shared filesystem state, so it
+     * needs the same lock every other filesys_*()/dir_*() call
+     * site uses. */
+    syscall_filesys_lock_acquire();
+    args->cwd = thread_current()->cwd != NULL
+                ? dir_reopen(thread_current()->cwd)
+                : dir_open_root();
+    syscall_filesys_lock_release();
+    if (args->cwd == NULL) {
+        palloc_free_page(args->file_name);
+        free(args);
+        free(ps);
+        return TID_ERROR;
+    }
+
     /* Register the child before starting it: start_process() may
      * run (and even finish) before thread_create() returns below. */
     list_push_back(&thread_current()->children, &ps->elem);
@@ -133,6 +156,9 @@ process_execute(const char *file_name)
     tid = thread_create(prog_name, PRI_DEFAULT, start_process, args);
     if (tid == TID_ERROR) {
         list_remove(&ps->elem);
+        syscall_filesys_lock_acquire();
+        dir_close(args->cwd);
+        syscall_filesys_lock_release();
         palloc_free_page(args->file_name);
         free(args);
         free(ps);
@@ -166,6 +192,7 @@ start_process(void *args_)
     log(L_TRACE, "start_process()");
 
     thread_current()->pstatus = ps;
+    thread_current()->cwd = args->cwd;
 
     /* Initialize interrupt frame and load executable. */
     memset(&if_, 0, sizeof if_);
@@ -289,6 +316,17 @@ process_exit(void)
         file_close(cur->exec_file);
         syscall_filesys_lock_release();
         cur->exec_file = NULL;
+    }
+
+    /* Close our cwd (opened for us by our parent's process_execute()
+     * -- see start_process()); NULL only for threads that never
+     * went through process_execute() at all (the initial kernel
+     * thread). */
+    if (cur->cwd != NULL) {
+        syscall_filesys_lock_acquire();
+        dir_close(cur->cwd);
+        syscall_filesys_lock_release();
+        cur->cwd = NULL;
     }
 
     /* We're done with any children we never waited for: drop our

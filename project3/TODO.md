@@ -81,15 +81,15 @@ or a relative path has no meaning today. `struct dir_entry` and
 There are no `.`/`..` entries anywhere.
 
 TODO:
-- [ ] Mark directory inodes as directories — add an `is_dir`-style flag
+- [x] Mark directory inodes as directories — add an `is_dir`-style flag
       somewhere reachable from an inode (e.g. in `struct inode_disk`, or
       tracked alongside it), so code can tell a file inode from a directory
       inode.
-- [ ] When a directory is created, write `.` (self) and `..` (parent)
+- [x] When a directory is created, write `.` (self) and `..` (parent)
       entries into it pointing at the right inode sectors — `dir_create()`/
       `dir_add()` in [filesys/directory.c](filesys/directory.c) don't do
       this today.
-- [ ] Write a path-resolution routine (new code, most naturally in
+- [x] Write a path-resolution routine (new code, most naturally in
       [filesys/filesys.c](filesys/filesys.c)) that:
       - Treats a leading `/` as absolute (start from the root directory)
         and anything else as relative to the **calling process's cwd**.
@@ -100,14 +100,14 @@ TODO:
       - Returns the containing directory and final component name
         separately, since `mkdir("/a/b/c")` needs `/a/b` to already exist
         and `/a/b/c` to not.
-- [ ] Route `filesys_create()`, `filesys_open()`, and `filesys_remove()`
+- [x] Route `filesys_create()`, `filesys_open()`, and `filesys_remove()`
       through that resolver instead of `dir_open_root()`.
-- [ ] Add a `filesys_mkdir()`-equivalent (or extend `dir_create()`'s
+- [x] Add a `filesys_mkdir()`-equivalent (or extend `dir_create()`'s
       caller) that resolves the parent, allocates a new inode sector,
       calls `dir_create()`, writes `.`/`..`, and `dir_add()`s it into the
       parent — failing if the parent path doesn't fully exist or the name
       already exists.
-- [ ] Add a per-process current working directory: a `struct dir *cwd`
+- [x] Add a per-process current working directory: a `struct dir *cwd`
       (or equivalent) field on `struct thread` in
       [threads/thread.h](threads/thread.h), next to the `pstatus`/`fd_list`
       fields already added for Project 3. Initialize the first process's
@@ -116,19 +116,13 @@ TODO:
       child inherit the parent's cwd (reopen the same directory, not
       re-resolve a path) rather than resetting to root. Close it in
       `process_exit()`.
-- [ ] Update `dir_remove()`/`filesys_remove()` semantics: a directory can
+- [x] Update `dir_remove()`/`filesys_remove()` semantics: a directory can
       only be removed if it's empty (nothing besides `.`/`..`), and the
       root can never be removed. Decide — and document in the design
       doc — whether removing a directory that's open or is some process's
       cwd is allowed; if you allow it, opening/creating inside a removed
       directory must then fail. `dir-rm-cwd`, `dir-rm-parent`, and
       `dir-rm-root` specifically probe this behavior.
-- [ ] Decide whether to keep `NAME_MAX` (14, in
-      [filesys/directory.h](filesys/directory.h)) for individual path
-      components or raise it; either way, full path names must be allowed
-      to be much longer than 14 characters, since they're resolved
-      component-by-component, not as one name.
-
 ---
 
 ## 3. New Directory Syscalls — [userprog/syscall.c](userprog/syscall.c)
@@ -138,34 +132,33 @@ The syscall numbers and user-facing prototypes already exist from Project
 `SYS_MKDIR`, `SYS_READDIR`, `SYS_ISDIR`, `SYS_INUMBER`, and
 [lib/user/syscall.h](lib/user/syscall.h) already declares `chdir()`,
 `mkdir()`, `readdir()`, `isdir()`, `inumber()` (plus `READDIR_MAX_LEN`).
-`syscall_handler()`'s `switch` just doesn't have cases for them yet, so
-they currently fall through to `default: sys_exit(-1);`.
+`syscall_handler()` has all five directory syscalls wired.
 
 TODO:
-- [ ] Add `sys_chdir(const char *dir)`: resolve `dir` (absolute or
+- [x] Add `sys_chdir(const char *dir)`: resolve `dir` (absolute or
       relative) to a directory, swap it in for the calling thread's cwd on
       success. Returns `false` without changing the cwd on failure.
-- [ ] Add `sys_mkdir(const char *dir)`: thin wrapper over the
+- [x] Add `sys_mkdir(const char *dir)`: thin wrapper over the
       `filesys_mkdir()`-equivalent from item 2.
-- [ ] Add `sys_readdir(int fd, char *name)`: only valid for an fd that's a
+- [x] Add `sys_readdir(int fd, char *name)`: only valid for an fd that's a
       directory; must skip `.`/`..` (the provided `dir_readdir()` doesn't
       filter these out on its own — check and filter if needed); writes
       into a buffer sized `READDIR_MAX_LEN + 1`.
-- [ ] Add `sys_isdir(int fd)` and `sys_inumber(int fd)`: `inumber()` can be
+- [x] Add `sys_isdir(int fd)` and `sys_inumber(int fd)`: `inumber()` can be
       implemented directly with the already-existing
       `inode_get_inumber()`/`struct inode *` reachable from either a
       `struct file` or `struct dir`.
-- [ ] Extend `struct fd_entry` (currently just `{ int fd; struct file
+- [x] Extend `struct fd_entry` (currently just `{ int fd; struct file
       *file; struct list_elem elem; }`) so a single fd table can represent
       either an open file or an open directory — e.g. add a `bool is_dir`
       and a `struct dir *dir` member (or a tagged union). `sys_open()` must
       check the new directory flag from item 2 and populate the right
       variant.
-- [ ] Update `sys_close()` to close whichever variant the fd actually is —
+- [x] Update `sys_close()` to close whichever variant the fd actually is —
       the spec calls out that `close` is the *only* existing call required
       to accept a directory fd, implying `read`/`write`/`seek`/`tell` on a
       directory fd should fail gracefully instead.
-- [ ] Update `sys_read()`/`sys_write()` to return `-1` (not crash) when
+- [x] Update `sys_read()`/`sys_write()` to return `-1` (not crash) when
       called on a directory fd.
 
 ---
