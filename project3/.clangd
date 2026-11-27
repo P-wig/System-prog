@@ -1,0 +1,21 @@
+# Pintos filesys build: Make.config, Makefile.build and filesys/Make.vars.
+# The fixed database anchors relative include paths at this project directory,
+# even when Neovim is opened in filesys/ or another subdirectory.
+CompileFlags:
+  CompilationDatabase: .
+
+---
+# These programs use Pintos's user library, not the kernel library/defines.
+# Shared lib/*.c defaults to its kernel build, as it is compiled in both modes.
+If:
+  PathMatch: (examples|lib/user|tests/(userprog|filesys|vm))/.*
+CompileFlags:
+  Remove: [-Ilib/kernel, -DUSERPROG, -DFILESYS]
+  Add: [-Ilib/user]
+
+---
+# Host-side utilities are ordinary native programs, not 32-bit Pintos code.
+If:
+  PathMatch: utils/.*
+CompileFlags:
+  CompilationDatabase: None
