@@ -569,15 +569,111 @@ safely in hand. This is why `chdir` is also what finally lets user code
    `syscall_handler()` forwards the argument and stores the boolean in
    `eax`.
 
-**Verification.** `mkdir` isn't a syscall yet, so the official `dir-*` tests
-can't run end to end. Instead we temporarily repurposed a test to boot the
-kernel in QEMU and check, with only `chdir`/`create`: `/`, `/..`, `.`, `//`
-succeed; a missing path, `""`, an existing *file*, and `file/x` all fail;
-and `chdir("/")` still works after those failures. All 10 checks passed
-(the swap is exercised on every success, so a double-close or leak would
-have panicked). The test was then reverted. Actually *moving into* a
-subdirectory is only testable once `sys_mkdir()` lands, which is the next
-item.
+**Verification.** Before `sys_mkdir()` was wired, we temporarily repurposed
+a test to boot the kernel in QEMU and check, with `chdir`/`create`: `/`, `/..`,
+`.`, `//` succeed; a missing path, `""`, an existing *file*, and `file/x`
+all fail; and `chdir("/")` still works after those failures. All 10 checks
+passed. The test was then reverted. The `dir-mkdir` test now also exercises
+moving into a newly created subdirectory and opening a file there by its
+relative name.
+
+### `sys_mkdir()`
+
+**Concept.** A syscall wrapper should keep the user/kernel boundary work
+separate from filesystem policy: validate that the user supplied a readable
+NUL-terminated path, acquire the filesystem lock used by the current
+implementation, and pass the path to the filesystem operation that already
+knows how to resolve parents, allocate the directory inode, and add its
+`.`/`..` entries. The syscall returns the filesystem operation's boolean
+result; it should not duplicate directory creation logic.
+
+**What we did.** Added `sys_mkdir()` in [syscall.c](userprog/syscall.c) as
+that thin wrapper around `filesys_mkdir()`. It checks the user string,
+calls `filesys_mkdir(dir)` while holding `filesys_lock`, and returns its
+result. The `SYS_MKDIR` case stores the boolean return value in `eax`, and
+the user-facing `mkdir()` wrapper already invokes that syscall number.
+Empty paths and paths with missing parents are rejected by
+`filesys_mkdir()` and return `false`; an invalid user pointer is handled
+consistently with other string syscalls by `check_user_string()`.
+
+**Verification.** Built the kernel and ran the targeted `dir-mkdir` test
+under QEMU. It passed, covering directory creation, creating `a/b` inside
+it, changing cwd to `a`, and opening `b` by its relative name. This
+end-to-end test also verifies that the new `SYS_MKDIR` dispatch reaches the
+filesystem layer and that the previously implemented `sys_chdir()` works
+with a directory created by the syscall.
+
+### `sys_readdir()` and directory file descriptors
+
+**Concept.** A directory descriptor is not a regular file descriptor: it
+needs its own iteration position and directory operations. The user API
+already returns the names through a buffer of `READDIR_MAX_LEN + 1` bytes,
+but the filesystem's `dir_readdir()` exposes the raw on-disk stream,
+including the special `.` and `..` entries. The syscall layer must therefore
+accept only directory descriptors, keep their iteration state across calls,
+filter those two entries, and copy one remaining name to user memory.
+
+`sys_readdir()` depends on directory descriptors being openable. Although
+the fd-table change is listed later in the TODO, it is included here as
+minimal prerequisite plumbing so the syscall can be exercised end to end.
+Directory-specific guards for other fd operations are included with it:
+without them, passing a directory to a file-only operation would dereference
+the empty file member of the fd entry.
+
+**What we did.** Extended `struct fd_entry` with an `is_dir` tag and a
+`struct dir *dir` member. `sys_open()` still uses `filesys_open()` for path
+resolution; if the resulting inode has its `is_dir` flag set, it reopens
+that inode as a `struct dir`, closes the temporary `struct file`, and stores
+the directory variant in the fd entry. This preserves the existing path
+handling and ensures the directory descriptor owns an independent open
+reference.
+
+The new `SYS_READDIR` case dispatches to `sys_readdir()`. It first validates
+the entire output range (`NAME_MAX + 1`, which matches the public
+`READDIR_MAX_LEN + 1` contract), rejects missing or non-directory fds, and
+holds `filesys_lock` while consuming directory entries. It loops over
+`dir_readdir()` results until it finds a name other than `.` or `..`, then
+copies that NUL-terminated name to the user buffer. The underlying directory
+position advances for every entry, including the filtered ones, so callers
+see only actual children and each is returned once in an unchanged
+directory.
+
+`sys_close()` and process-exit fd cleanup now close the matching object
+variant. Read and write on directory descriptors return `-1`; filesize
+returns `-1`, seek is ignored, and tell returns `0` rather than touching a
+null file pointer.
+
+**Verification.** The kernel built, and the targeted `dir-vine` test passed
+under QEMU. It repeatedly enumerates each directory after creating `.` and
+`..`, files, and child directories; it checks that exactly the two children
+are returned in either order. The `dir-open` test also passed, verifying a
+directory can be opened and writing to it returns `-1`.
+
+### `sys_isdir()` and `sys_inumber()`
+
+**Concept.** File descriptors are process-local handles, while an inode
+number identifies the underlying filesystem object. The fd table now tags
+each entry as either a file or directory, so `isdir(fd)` can answer from
+that tag. `inumber(fd)` must work for either kind of descriptor, which means
+retrieving the corresponding inode through `file_get_inode()` or
+`dir_get_inode()` before calling the shared inode accessor. Invalid
+descriptors should return a safe sentinel rather than dereferencing a
+missing fd entry.
+
+**What we did.** Added `SYS_ISDIR` and `SYS_INUMBER` cases to
+`syscall_handler()`. `sys_isdir()` returns true only for a valid directory
+descriptor; an invalid fd or regular file returns false. `sys_inumber()`
+returns `-1` for an invalid fd and otherwise selects the inode from the
+file/directory variant, calls `inode_get_inumber()`, and returns that sector
+number. The inode lookup is protected by `filesys_lock`, matching the
+filesystem synchronization used by the other fd operations.
+
+**Verification.** The targeted `dir-rm-cwd` test passed under QEMU. It opens
+both root and a child directory, then compares their inode numbers and
+verifies that reopening the same directory through different paths returns
+the same number. The directory archive/persistence path is also exercised
+by the test runner, where the `tar` helper uses `isdir()` to distinguish
+directories from files.
 
 ---
 
@@ -585,8 +681,10 @@ item.
 
 Sections 1 (Indexed and Extensible Files) and 2 (Subdirectories /
 Path Resolution) are both fully complete — every `TODO.md` item in
-either section is checked off. In Section 3, `sys_chdir()` is done. What's
-left is the rest of Section 3's directory syscalls, Section 4's path-aware
-existing syscalls, Section 5's finer-grained locking, Section 6's
-`extract`/`append` fix, and Section 7's design document. This file will
-grow to cover each one, in the same order, as we complete them.
+either section is checked off. In Section 3, `sys_chdir()`, `sys_mkdir()`,
+`sys_readdir()`, `sys_isdir()`, and `sys_inumber()` are done, as are the
+directory-fd table, close, and read/write prerequisites. What's left is
+Section 4's path-aware existing syscalls, Section 5's
+finer-grained locking, Section 6's `extract`/`append` fix, and Section 7's
+design document. This file will grow to cover each one, in the same order,
+as we complete them.

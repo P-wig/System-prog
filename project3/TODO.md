@@ -132,34 +132,33 @@ The syscall numbers and user-facing prototypes already exist from Project
 `SYS_MKDIR`, `SYS_READDIR`, `SYS_ISDIR`, `SYS_INUMBER`, and
 [lib/user/syscall.h](lib/user/syscall.h) already declares `chdir()`,
 `mkdir()`, `readdir()`, `isdir()`, `inumber()` (plus `READDIR_MAX_LEN`).
-`syscall_handler()`'s `switch` just doesn't have cases for them yet, so
-they currently fall through to `default: sys_exit(-1);`.
+`syscall_handler()` has all five directory syscalls wired.
 
 TODO:
 - [x] Add `sys_chdir(const char *dir)`: resolve `dir` (absolute or
       relative) to a directory, swap it in for the calling thread's cwd on
       success. Returns `false` without changing the cwd on failure.
-- [ ] Add `sys_mkdir(const char *dir)`: thin wrapper over the
+- [x] Add `sys_mkdir(const char *dir)`: thin wrapper over the
       `filesys_mkdir()`-equivalent from item 2.
-- [ ] Add `sys_readdir(int fd, char *name)`: only valid for an fd that's a
+- [x] Add `sys_readdir(int fd, char *name)`: only valid for an fd that's a
       directory; must skip `.`/`..` (the provided `dir_readdir()` doesn't
       filter these out on its own — check and filter if needed); writes
       into a buffer sized `READDIR_MAX_LEN + 1`.
-- [ ] Add `sys_isdir(int fd)` and `sys_inumber(int fd)`: `inumber()` can be
+- [x] Add `sys_isdir(int fd)` and `sys_inumber(int fd)`: `inumber()` can be
       implemented directly with the already-existing
       `inode_get_inumber()`/`struct inode *` reachable from either a
       `struct file` or `struct dir`.
-- [ ] Extend `struct fd_entry` (currently just `{ int fd; struct file
+- [x] Extend `struct fd_entry` (currently just `{ int fd; struct file
       *file; struct list_elem elem; }`) so a single fd table can represent
       either an open file or an open directory — e.g. add a `bool is_dir`
       and a `struct dir *dir` member (or a tagged union). `sys_open()` must
       check the new directory flag from item 2 and populate the right
       variant.
-- [ ] Update `sys_close()` to close whichever variant the fd actually is —
+- [x] Update `sys_close()` to close whichever variant the fd actually is —
       the spec calls out that `close` is the *only* existing call required
       to accept a directory fd, implying `read`/`write`/`seek`/`tell` on a
       directory fd should fail gracefully instead.
-- [ ] Update `sys_read()`/`sys_write()` to return `-1` (not crash) when
+- [x] Update `sys_read()`/`sys_write()` to return `-1` (not crash) when
       called on a directory fd.
 
 ---
